@@ -7,7 +7,9 @@
 import { detectDateSpec, type AlignmentData, type DataSection, type SiteRange } from './data';
 import { attachAlignment } from './partitions';
 import type { PriorSpec, Slot } from './module-api';
-import type { OptionsSchema, OptionValues } from './schema';
+import type { OptionsSchema, OptionValues, SchemaRefs } from './schema';
+import type { TaxonSet } from './taxonsets';
+import type { Timeline } from './timeline';
 
 export const DOCUMENT_FORMAT = 'beautique';
 export const DOCUMENT_FORMAT_VERSION = 1;
@@ -79,6 +81,10 @@ export interface AnalysisDocument {
   /** Analysis name; used as the stem of output file names. */
   name: string;
   data: DataSection;
+  /** Named subsets of the taxa that models and statistics refer to. */
+  taxonSets?: TaxonSet[];
+  /** Named divisions of time into epochs that models refer to. */
+  timelines?: Timeline[];
   partitions: Partition[];
   tree: TreeSpec;
   components: ModelInstance[];
@@ -127,6 +133,14 @@ export const mcmcSchema: OptionsSchema = {
 
 export function findInstance(doc: AnalysisDocument, id: string | null): ModelInstance | undefined {
   return id === null ? undefined : doc.components.find((c) => c.id === id);
+}
+
+/** The shared objects of a document that reference fields may point to. */
+export function schemaRefs(doc: AnalysisDocument): SchemaRefs {
+  return {
+    taxonSets: (doc.taxonSets ?? []).map(({ id, name }) => ({ id, name })),
+    timelines: (doc.timelines ?? []).map(({ id, name }) => ({ id, name })),
+  };
 }
 
 /** Check that a parsed JSON value looks like a document this version can read. */

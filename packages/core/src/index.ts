@@ -4,6 +4,8 @@ export * from './data';
 export * from './fasta';
 export * from './nexus';
 export * from './priors';
+export * from './taxonsets';
+export * from './timeline';
 export * from './partitions';
 export * from './module-api';
 export * from './registry';

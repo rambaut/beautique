@@ -1,5 +1,6 @@
 <script lang="ts">
   import { validateField, type FieldSchema } from '@beautique/core';
+  import { app } from './state.svelte';
 
   interface Props {
     name: string;
@@ -10,12 +11,24 @@
   }
   let { name, field, value, onchange }: Props = $props();
 
-  const message = $derived(value === undefined ? null : validateField(field, value));
+  const isRef = $derived(field.type === 'taxonSetRef' || field.type === 'timelineRef');
+  // References are checked even when unset, so that a missing required one is reported.
+  const message = $derived(
+    value === undefined && !isRef
+      ? null
+      : validateField(field, value ?? (field.type === 'taxonSetRef' && field.multiple ? [] : null), app.refs),
+  );
   const id = $derived(`field-${name}`);
 
   function numberInput(event: Event): void {
     const raw = (event.currentTarget as HTMLInputElement).value;
     onchange(raw.trim() === '' ? undefined : Number(raw));
+  }
+
+  /** Tick or untick one taxon set of a field that takes several. */
+  function toggleSet(setId: string, on: boolean): void {
+    const current = Array.isArray(value) ? (value as string[]) : [];
+    onchange(on ? [...current.filter((s) => s !== setId), setId] : current.filter((s) => s !== setId));
   }
 </script>
 
@@ -29,6 +42,40 @@
       />
       {field.label}
     </label>
+  {:else if field.type === 'taxonSetRef' && field.multiple}
+    <fieldset class="checks">
+      <legend>{field.label}</legend>
+      {#each app.taxonSets as set (set.id)}
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={Array.isArray(value) && value.includes(set.id)}
+            onchange={(e) => toggleSet(set.id, e.currentTarget.checked)}
+          />
+          {set.name} <span class="help">{set.taxa.length} taxa</span>
+        </label>
+      {:else}
+        <p class="help">
+          There are no taxon sets yet. Make them in the
+          <button class="link" onclick={() => (app.step = 'taxonSets')}>Taxon sets</button> step.
+        </p>
+      {/each}
+    </fieldset>
+  {:else if field.type === 'taxonSetRef' || field.type === 'timelineRef'}
+    {@const items = field.type === 'taxonSetRef' ? app.taxonSets : app.timelines}
+    {@const target = field.type === 'taxonSetRef' ? 'taxonSets' : 'timelines'}
+    <label for={id}>{field.label}</label>
+    <div class="control">
+      <select {id} value={typeof value === 'string' ? value : ''} onchange={(e) => onchange(e.currentTarget.value || null)}>
+        <option value="">{field.required ? 'Choose…' : 'None'}</option>
+        {#each items as item (item.id)}
+          <option value={item.id}>{item.name}</option>
+        {/each}
+      </select>
+      <button class="link" onclick={() => (app.step = target)}>
+        {field.type === 'taxonSetRef' ? 'Edit taxon sets' : 'Edit timelines'}
+      </button>
+    </div>
   {:else}
     <label for={id}>{field.label}</label>
     <div class="control">
@@ -46,7 +93,7 @@
           oninput={(e) => onchange(e.currentTarget.value)}
           aria-invalid={message !== null}
         />
-      {:else}
+      {:else if field.type === 'integer' || field.type === 'real'}
         <input
           {id}
           type="number"

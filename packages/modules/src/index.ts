@@ -30,6 +30,8 @@ export function defaultTemplate(): AnalysisDocument {
       dates: { mode: 'auto', delimiter: '|', field: -1 },
       taxonIdStyle: 'label',
     },
+    taxonSets: [],
+    timelines: [],
     partitions: [
       {
         id: 'partition',

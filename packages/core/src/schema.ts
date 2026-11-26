@@ -3,8 +3,9 @@
  * types; the app renders a stock control for each, and the same validation runs
  * in the app, in template resolution and in the CLI.
  *
- * Milestone 1 implements the scalar types. Vector, matrix, distribution,
- * reference, group and list types are added with the features that need them.
+ * There are scalar types, and references to the shared objects of an analysis
+ * (taxon sets and timelines). Vector, matrix, distribution, group and list
+ * types are added with the features that need them.
  */
 
 /** A serialisable condition on another field of the same schema. */
@@ -75,7 +76,34 @@ export interface ChoiceField extends FieldBase {
   choices: Choice[];
 }
 
-export type FieldSchema = TextField | IntegerField | RealField | BooleanField | ChoiceField;
+/** A reference to one taxon set (the value is its id, or null), or with `multiple` to several (an array of ids). */
+export interface TaxonSetRefField extends FieldBase {
+  type: 'taxonSetRef';
+  multiple?: boolean;
+  /** At least one set must be chosen. */
+  required?: boolean;
+}
+
+/** A reference to a timeline (the value is its id, or null). */
+export interface TimelineRefField extends FieldBase {
+  type: 'timelineRef';
+  required?: boolean;
+}
+
+export type FieldSchema =
+  | TextField
+  | IntegerField
+  | RealField
+  | BooleanField
+  | ChoiceField
+  | TaxonSetRefField
+  | TimelineRefField;
+
+/** The shared objects that reference fields may point to. */
+export interface SchemaRefs {
+  taxonSets: { id: string; name: string }[];
+  timelines: { id: string; name: string }[];
+}
 export type OptionsSchema = Record<string, FieldSchema>;
 export type OptionValues = Record<string, unknown>;
 
@@ -85,7 +113,7 @@ export interface FieldIssue {
 }
 
 function fallback(field: FieldSchema): unknown {
-  if (field.default !== undefined) return field.default;
+  if ('default' in field && field.default !== undefined) return field.default;
   switch (field.type) {
     case 'text':
       return '';
@@ -93,6 +121,10 @@ function fallback(field: FieldSchema): unknown {
       return false;
     case 'choice':
       return field.choices[0]?.value;
+    case 'taxonSetRef':
+      return field.multiple ? [] : null;
+    case 'timelineRef':
+      return null;
     default:
       return undefined;
   }
@@ -121,8 +153,11 @@ export function isVisible(field: FieldSchema, values: OptionValues): boolean {
   return conditionHolds(field.visibleWhen, values);
 }
 
-/** Validate one value against its field. Returns a message, or null when valid. */
-export function validateField(field: FieldSchema, value: unknown): string | null {
+/**
+ * Validate one value against its field. Returns a message, or null when valid.
+ * References are checked against `refs` when it is given.
+ */
+export function validateField(field: FieldSchema, value: unknown, refs?: SchemaRefs): string | null {
   switch (field.type) {
     case 'text': {
       if (typeof value !== 'string') return 'must be text';
@@ -159,22 +194,44 @@ export function validateField(field: FieldSchema, value: unknown): string | null
       return field.choices.some((c) => c.value === value)
         ? null
         : `must be one of: ${field.choices.map((c) => c.value).join(', ')}`;
+    case 'taxonSetRef': {
+      const ids = field.multiple ? value : value === null || value === undefined ? [] : [value];
+      if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) return 'must refer to taxon sets';
+      if (field.required && ids.length === 0) {
+        return field.multiple ? 'needs at least one taxon set' : 'needs a taxon set';
+      }
+      if (refs && ids.some((id) => !refs.taxonSets.some((s) => s.id === id))) {
+        return 'refers to a taxon set that no longer exists';
+      }
+      return null;
+    }
+    case 'timelineRef':
+      if (value === null || value === undefined) return field.required ? 'needs a timeline' : null;
+      if (typeof value !== 'string') return 'must refer to a timeline';
+      if (refs && !refs.timelines.some((t) => t.id === value)) return 'refers to a timeline that no longer exists';
+      return null;
   }
 }
 
 /** Validate resolved values against a schema. Hidden fields are not validated. */
-export function validateOptions(schema: OptionsSchema, values: OptionValues): FieldIssue[] {
+export function validateOptions(schema: OptionsSchema, values: OptionValues, refs?: SchemaRefs): FieldIssue[] {
   const issues: FieldIssue[] = [];
   for (const [key, field] of Object.entries(schema)) {
     if (!isVisible(field, values)) continue;
-    const message = validateField(field, values[key]);
+    const message = validateField(field, values[key], refs);
     if (message) issues.push({ field: key, message: `${field.label} ${message}` });
   }
   return issues;
 }
 
-/** Convert a string (from the command line or a text input) into a value of the field's type. */
-export function coerceValue(field: FieldSchema, raw: string): unknown {
+/**
+ * Convert a string (from the command line or a text input) into a value of the
+ * field's type. References may be given by name or id when `refs` is given;
+ * several taxon sets are separated by commas.
+ */
+export function coerceValue(field: FieldSchema, raw: string, refs?: SchemaRefs): unknown {
+  const idOf = (list: { id: string; name: string }[] | undefined, text: string): string =>
+    list?.find((item) => item.id === text || item.name === text)?.id ?? text;
   switch (field.type) {
     case 'integer':
     case 'real': {
@@ -185,6 +242,13 @@ export function coerceValue(field: FieldSchema, raw: string): unknown {
       if (/^(true|yes|1|on)$/i.test(raw)) return true;
       if (/^(false|no|0|off)$/i.test(raw)) return false;
       return raw;
+    case 'taxonSetRef': {
+      const names = raw.split(',').map((n) => n.trim()).filter((n) => n !== '');
+      const ids = names.map((n) => idOf(refs?.taxonSets, n));
+      return field.multiple ? ids : (ids[0] ?? null);
+    }
+    case 'timelineRef':
+      return raw.trim() === '' ? null : idOf(refs?.timelines, raw.trim());
     default:
       return raw;
   }

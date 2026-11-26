@@ -8,6 +8,8 @@
   import OperatorsStep from './steps/OperatorsStep.svelte';
   import PartitionsStep from './steps/PartitionsStep.svelte';
   import PriorsStep from './steps/PriorsStep.svelte';
+  import TaxonSetsStep from './steps/TaxonSetsStep.svelte';
+  import TimelinesStep from './steps/TimelinesStep.svelte';
 
   let showPreview = $state(true);
 
@@ -67,6 +69,10 @@
       <DataStep />
     {:else if app.step === 'dates'}
       <DatesStep />
+    {:else if app.step === 'taxonSets'}
+      <TaxonSetsStep />
+    {:else if app.step === 'timelines'}
+      <TimelinesStep />
     {:else if app.step === 'partitions'}
       <PartitionsStep />
     {:else if app.step === 'substitution' || app.step === 'clock' || app.step === 'tree'}

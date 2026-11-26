@@ -6,15 +6,19 @@ import {
   alignmentFromText,
   assertDocument,
   bindData,
+  deriveTaxa,
   generate,
   listSettings,
   setCodonScheme,
   setSetting,
   SLOT_LABELS,
   BEAUTIQUE_VERSION,
+  TIME_UNITS,
   type AnalysisDocument,
   type ModuleDefinition,
   type ModuleRegistry,
+  type TimeUnit,
+  type Timeline,
 } from '@beautique/core';
 import { createRegistry, defaultTemplate } from '@beautique/modules';
 
@@ -31,7 +35,15 @@ Options for generate:
       --codon <scheme>      Partition by codon position: 12+3 or 1+2+3
   -o, --output <file>       Output file. Default: <name>.xml
   -n, --name <name>         Analysis name (stem of BEAST's output files)
-  -s, --set <path=value>    Set a setting; repeatable (see "describe" for paths)
+      --taxon-set <name=pattern>  Define a taxon set: the taxa whose label matches the regular
+                            expression, or name=@file for a file with one taxon per line; repeatable
+      --clade <name=pattern>    As --taxon-set, and constrain the set to be a clade of the tree
+      --timeline <name=spec>    Define a timeline; repeatable. The spec is one of:
+                              12x1months        12 epochs of 1 month (days, weeks, months, years)
+                              2020-03-23,2020-11-05   transitions at these dates
+                              ago:0.5,1,2       transitions this many years before the last sample
+  -s, --set <path=value>    Set a setting; repeatable (see "describe" for paths). Settings that
+                            refer to taxon sets or timelines take their names
       --date-field <n>      Field of the taxon label holding the date (1 = first, -1 = last)
       --date-delimiter <c>  Delimiter that separates label fields for dates
       --no-dates            Do not read dates from taxon labels
@@ -75,6 +87,54 @@ function describe(doc: AnalysisDocument, registry: ModuleRegistry): string {
   return lines.join('\n');
 }
 
+function splitAssignment(option: string, text: string): [string, string] {
+  const eq = text.indexOf('=');
+  if (eq < 1) throw new UsageError(`${option} expects name=value, got "${text}"`);
+  return [text.slice(0, eq), text.slice(eq + 1)];
+}
+
+async function addTaxonSet(doc: AnalysisDocument, option: string, text: string, monophyletic: boolean): Promise<void> {
+  const [name, pattern] = splitAssignment(option, text);
+  const taxa = deriveTaxa(doc.data).taxa;
+  let keys: string[];
+  if (pattern.startsWith('@')) {
+    const wanted = new Set(
+      (await readFile(pattern.slice(1), 'utf8')).split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== ''),
+    );
+    keys = taxa.filter((t) => wanted.has(t.key) || wanted.has(t.label) || wanted.has(t.id)).map((t) => t.key);
+    if (keys.length < wanted.size) {
+      console.error(`Warning: ${wanted.size - keys.length} taxa listed for "${name}" are not in the data`);
+    }
+  } else {
+    let regex: RegExp;
+    try {
+      regex = new RegExp(pattern);
+    } catch {
+      throw new UsageError(`${option}: "${pattern}" is not a valid regular expression`);
+    }
+    keys = taxa.filter((t) => regex.test(t.label)).map((t) => t.key);
+  }
+  if (keys.length === 0) throw new UsageError(`${option}: no taxa match "${pattern}"`);
+  doc.taxonSets = [...(doc.taxonSets ?? []).filter((s) => s.name !== name)];
+  doc.taxonSets.push({ id: `taxonset-${name}`, name, taxa: keys, ...(monophyletic ? { monophyletic: true } : {}) });
+}
+
+function addTimeline(doc: AnalysisDocument, text: string): void {
+  const [name, spec] = splitAssignment('--timeline', text);
+  const base = { id: `timeline-${name}`, name };
+  const regular = /^(\d+)x([\d.]+)([a-z]+)$/.exec(spec);
+  let timeline: Timeline;
+  if (regular) {
+    if (!(regular[3] in TIME_UNITS)) throw new UsageError(`--timeline: unknown unit of time "${regular[3]}"`);
+    timeline = { ...base, kind: 'regular', epochCount: Number(regular[1]), duration: Number(regular[2]), units: regular[3] as TimeUnit };
+  } else if (spec.startsWith('ago:')) {
+    timeline = { ...base, kind: 'heights', heights: spec.slice(4).split(',').map(Number) };
+  } else {
+    timeline = { ...base, kind: 'dates', dates: spec.split(',') };
+  }
+  doc.timelines = [...(doc.timelines ?? []).filter((t) => t.name !== name), timeline];
+}
+
 async function main(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -88,6 +148,9 @@ async function main(argv: string[]): Promise<number> {
       output: { type: 'string', short: 'o' },
       name: { type: 'string', short: 'n' },
       set: { type: 'string', short: 's', multiple: true },
+      'taxon-set': { type: 'string', multiple: true },
+      clade: { type: 'string', multiple: true },
+      timeline: { type: 'string', multiple: true },
       'date-field': { type: 'string' },
       'date-delimiter': { type: 'string' },
       'no-dates': { type: 'boolean' },
@@ -158,6 +221,10 @@ async function main(argv: string[]): Promise<number> {
   } else if (values['date-delimiter'] !== undefined) {
     throw new UsageError('--date-delimiter needs --date-field');
   }
+
+  for (const text of values['taxon-set'] ?? []) await addTaxonSet(doc, '--taxon-set', text, false);
+  for (const text of values.clade ?? []) await addTaxonSet(doc, '--clade', text, true);
+  for (const text of values.timeline ?? []) addTimeline(doc, text);
 
   if (values.name) setSetting(doc, registry, 'name', values.name);
   const given = new Set<string>(values.name ? ['name'] : []);

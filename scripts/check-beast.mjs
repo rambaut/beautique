@@ -25,6 +25,14 @@ const cases = {
   'codon12+3-hky': ['--codon', '12+3'],
   'codon1+2+3-gtr-ucln-skygrid': ['--codon', '1+2+3', ...M('substitution', 'substitution.gtr'), ...M('clock', 'clock.uncorrelated'), ...M('treePrior', 'treePrior.skygrid')],
   'undated-skygrid': ['--no-dates', ...M('treePrior', 'treePrior.skygrid'), ...S('models.treePrior.cutOff', '100')],
+  'clade-constraints': ['--clade', 'Trinidad=_Trinidad$', '--clade', 'Trinidad70s80s=^19[78].*_Trinidad$', '--taxon-set', 'Brazil=_Brazil$'],
+  'local-clock-clades': ['--clade', 'Trinidad=_Trinidad$', '--taxon-set', 'Brazil=_Brazil$', ...M('clock', 'clock.localClade'), ...S('models.clock.clades', 'Trinidad,Brazil')],
+  'local-clock-clades-relative': ['--taxon-set', 'Brazil=_Brazil$', ...M('clock', 'clock.localClade'), ...S('models.clock.clades', 'Brazil'), ...S('models.clock.relative', 'true'), ...S('models.clock.includeStem', 'false')],
+  'local-clock-epochs': ['--timeline', 'eras=1980-01-01,1995-06-15', ...M('clock', 'clock.epoch'), ...S('models.clock.timeline', 'eras')],
+  'birth-death-sampling': [...M('treePrior', 'treePrior.birthDeathSampling')],
+  'birth-death-sampling-constant-epoch': [...M('treePrior', 'treePrior.episodicBirthDeathSampling')],
+  'birth-death-sampling-epochs': ['--timeline', 'decades=5x10years', ...M('treePrior', 'treePrior.episodicBirthDeathSampling'), ...S('models.treePrior.timeline', 'decades')],
+  'epochs-clock-and-birth-death-ucln': ['--codon', '12+3', '--clade', 'Trinidad=_Trinidad$', '--timeline', 'eras=ago:15,30', ...M('treePrior', 'treePrior.episodicBirthDeathSampling'), ...S('models.treePrior.timeline', 'eras'), ...M('clock', 'clock.uncorrelated')],
 };
 
 mkdirSync('out/check', { recursive: true });

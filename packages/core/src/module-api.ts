@@ -8,6 +8,8 @@
  */
 
 import type { OptionsSchema, OptionValues } from './schema';
+import type { TaxonSetInfo } from './taxonsets';
+import type { ResolvedTimeline } from './timeline';
 import type { AttrValue, XmlChild, XmlComment, XmlElement, XmlNode } from './xml';
 
 export const MODULE_API_VERSION = 1;
@@ -134,6 +136,15 @@ export interface ModuleContext {
   /** Id prefix for this instance: empty when it is the only one in its slot. */
   prefix: string;
   data: DataSummary;
+  /** The taxon sets of the analysis. Each is written as `<taxa id=name>` before any module's XML. */
+  taxonSets: TaxonSetInfo[];
+  /** The taxon set an option of type `taxonSetRef` refers to. Throws if there is none with that id. */
+  taxonSet(id: unknown): TaxonSetInfo;
+  /**
+   * The timeline an option of type `timelineRef` refers to, with its transition
+   * times worked out. Throws if there is none with that id or it is not valid.
+   */
+  timeline(id: unknown): ResolvedTimeline;
   operatorStrategy: 'standard' | 'hmc';
   /** The setting path of one of this module's options, for use in `Issue.path`. */
   optionPath(name: string): string;
@@ -148,6 +159,11 @@ export interface ModuleContext {
    * e.g. `ctx.ref('treeModel')`. Throws if no module in use provides it.
    */
   ref(name: string): XmlElement;
+  /**
+   * A value published by another module (see `ModuleDefinition.facts`), or
+   * undefined when no module in use provides it. Not available inside `facts`.
+   */
+  fact(name: string): FactValue | undefined;
   /** XML builders, so runtime-loaded modules need no imports. */
   xml: {
     el(name: string, attrs?: Record<string, AttrValue>, children?: XmlChild[]): XmlElement;
@@ -155,6 +171,8 @@ export interface ModuleContext {
     comment(text: string): XmlComment;
   };
 }
+
+export type FactValue = number | string | boolean;
 
 export interface ModuleDefinition {
   apiVersion: number;
@@ -176,6 +194,13 @@ export interface ModuleDefinition {
    * `treeModel`, `allInternalNodeHeights`, `startingTree`, `branchRates`, `substitutionModel`.
    */
   refs?(ctx: ModuleContext): Record<string, XmlElement>;
+  /**
+   * Plain values other modules may need, by well-known name. Names in use:
+   * `startingRootHeight`: the height the root of the starting tree should have,
+   * in years. Tree priors with a time of origin publish it so that the tree
+   * starts below the origin; starting tree modules should honour it.
+   */
+  facts?(ctx: ModuleContext): Record<string, FactValue>;
   generate(ctx: ModuleContext): Contributions;
   /** Checks beyond what the options schema expresses. */
   validate?(ctx: ModuleContext): Issue[];

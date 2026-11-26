@@ -58,6 +58,8 @@ function checkReferences(xml: string): void {
 describe('built-in modules', () => {
   it('are discovered from the module files', () => {
     expect(builtinModules.map((m) => m.id)).toEqual([
+      'clock.epoch',
+      'clock.localClade',
       'clock.strict',
       'clock.uncorrelated',
       'siteHeterogeneity.gamma',
@@ -65,7 +67,9 @@ describe('built-in modules', () => {
       'substitution.gtr',
       'substitution.hky',
       'tree.timeTree',
+      'treePrior.birthDeathSampling',
       'treePrior.constant',
+      'treePrior.episodicBirthDeathSampling',
       'treePrior.exponential',
       'treePrior.skygrid',
     ]);
@@ -372,6 +376,196 @@ end;`;
     expect(generate(doc, registry).issues.map((i) => i.message)).toContain(
       'Partition "geneB" has a site range outside its alignment (1 to 12)',
     );
+  });
+});
+
+describe('taxon sets and timelines', () => {
+  const errorsOf = (doc: AnalysisDocument): string[] =>
+    generate(doc, registry).issues.filter((i) => i.severity === 'error').map((i) => i.message);
+
+  /** The dated example with a taxon set for each country and a timeline. */
+  function designed(): AnalysisDocument {
+    const doc = project();
+    doc.taxonSets = [
+      { id: 's1', name: 'Guinea', taxa: ['A', 'B'] },
+      { id: 's2', name: 'Liberia', taxa: ['C', 'D'], monophyletic: true },
+    ];
+    doc.timelines = [{ id: 't1', name: 'eras', kind: 'dates', dates: ['2014-07-01', '2014-12-01'] }];
+    return doc;
+  }
+
+  it('writes each taxon set with its tMRCA, and constrains clades', () => {
+    const xml = xmlOf(designed());
+    checkReferences(xml);
+    expect(xml).toMatch(/<taxa id="Guinea">\s*<taxon idref="A\|Guinea\|2014-03-01"\/>\s*<taxon idref="B\|Guinea\|2014-06-15"\/>\s*<\/taxa>/);
+    expect(xml).toMatch(/<tmrcaStatistic id="tmrca\(Guinea\)">\s*<mrca>\s*<taxa idref="Guinea"\/>/);
+    expect(xml).toContain('<tmrcaStatistic id="age(Liberia)" absolute="true">');
+    expect(xml).toMatch(/<booleanLikelihood>\s*<monophylyStatistic idref="monophyly\(Liberia\)"\/>/);
+    expect(xml).not.toContain('monophyly(Guinea)');
+    expect(xml).toMatch(/<log id="fileLog"[^>]*>[\s\S]*<tmrcaStatistic idref="tmrca\(Guinea\)"\/>\s*<tmrcaStatistic idref="age\(Guinea\)"\/>/);
+    // the starting tree is simulated with the clade as a subtree
+    expect(xml).toMatch(
+      /<coalescentSimulator id="startingTree">\s*<coalescentSimulator>\s*<taxa idref="Liberia"\/>\s*<constantSize idref="initialDemo"\/>\s*<\/coalescentSimulator>\s*<taxa idref="taxa"\/>/,
+    );
+  });
+
+  it('nests the starting trees of nested clades', () => {
+    const doc = designed();
+    doc.taxonSets!.push({ id: 's3', name: 'later', taxa: ['B', 'C', 'D'], monophyletic: true });
+    expect(xmlOf(doc)).toMatch(
+      /<coalescentSimulator id="startingTree">\s*<coalescentSimulator>\s*<coalescentSimulator>\s*<taxa idref="Liberia"\/>[\s\S]*?<\/coalescentSimulator>\s*<taxa idref="later"\/>/,
+    );
+  });
+
+  it('reports taxon sets that cannot be used', () => {
+    const doc = designed();
+    doc.taxonSets!.push(
+      { id: 's3', name: 'Liberia', taxa: ['B', 'C'], monophyletic: true },
+      { id: 's4', name: 'my set', taxa: ['nobody'] },
+    );
+    const result = generate(doc, registry);
+    expect(result.issues.map((i) => `${i.severity}: ${i.message}`)).toEqual([
+      'error: Taxon set "Liberia" has the same name as another',
+      'error: Taxon set "Liberia" has the same name as another',
+      'error: Taxon set "my set" has a name with spaces or the characters " \' < > &',
+      'warning: Taxon set "my set" lists 1 taxa that are not in the data; they are left out',
+      'error: Taxon set "my set" is empty',
+      'error: Taxon sets "Liberia" and "Liberia" cannot both be clades: they overlap without one containing the other',
+    ]);
+    expect(result.issues.every((i) => i.path === 'taxonSets')).toBe(true);
+  });
+
+  it('rejects a taxon set named like another element of the analysis', () => {
+    const doc = designed();
+    doc.taxonSets![0].name = 'treeModel';
+    expect(errorsOf(doc)).toEqual([
+      'The id "treeModel" is used by more than one element of the analysis; rename one of them',
+    ]);
+  });
+
+  it('local clocks on clades', () => {
+    const doc = designed();
+    setSetting(doc, registry, 'models.clock.module', 'clock.localClade');
+    expect(errorsOf(doc)).toEqual(['Local clocks on clades: Clades with their own rate needs at least one taxon set']);
+
+    setSetting(doc, registry, 'models.clock.clades', 'Guinea,Liberia');
+    expect(doc.components.find((c) => c.id === 'clock')?.options.clades).toEqual(['s1', 's2']);
+    const xml = xmlOf(doc);
+    checkReferences(xml);
+    expect(xml).toMatch(
+      /<localClockModel id="branchRates">\s*<treeModel idref="treeModel"\/>\s*<rate>\s*<parameter id="clock.rate" value="0.001" lower="0"\/>\s*<\/rate>\s*<clade includeStem="true" relative="false">\s*<parameter id="Guinea.rate" value="0.001" lower="0"\/>\s*<taxa idref="Guinea"\/>/,
+    );
+    expect(xml).toMatch(/<ctmcScalePrior>\s*<ctmcScale>\s*<parameter idref="Liberia.rate"\/>/);
+    expect(xml).toMatch(/<down>\s*<parameter idref="clock.rate"\/>\s*<parameter idref="Guinea.rate"\/>\s*<parameter idref="Liberia.rate"\/>\s*<\/down>/);
+
+    // as multiples of the background rate, with their own prior and no part in the up-down move
+    setSetting(doc, registry, 'models.clock.relative', 'true');
+    setSetting(doc, registry, 'models.clock.includeStem', 'false');
+    const relative = xmlOf(doc);
+    expect(relative).toContain('<clade includeStem="false" relative="true">');
+    expect(relative).toContain('<parameter id="Guinea.rate" value="1" lower="0"/>');
+    expect(relative).toMatch(/<logNormalPrior mu="0" sigma="1" offset="0">\s*<parameter idref="Guinea.rate"\/>/);
+    expect(relative).toMatch(/<down>\s*<parameter idref="clock.rate"\/>\s*<\/down>/);
+
+    // a deleted taxon set is reported, not silently dropped
+    doc.taxonSets = doc.taxonSets!.filter((s) => s.id !== 's1');
+    expect(errorsOf(doc)).toContain(
+      'Local clocks on clades: Clades with their own rate refers to a taxon set that no longer exists',
+    );
+  });
+
+  it('local clocks in epochs', () => {
+    const doc = designed();
+    setSetting(doc, registry, 'models.clock.module', 'clock.epoch');
+    expect(errorsOf(doc)[0]).toBe('Local clocks in epochs: Timeline needs a timeline');
+
+    setSetting(doc, registry, 'models.clock.timeline', 'eras');
+    const result = generate(doc, registry);
+    const xml = result.xml as string;
+    checkReferences(xml);
+    const heights = [...xml.matchAll(/<epoch transitionTime="([^"]+)">/g)].map((m) => Number(m[1]));
+    expect(heights).toHaveLength(2);
+    // the most recent sample is 2015-01-20; the transitions are 2014-12-01 and 2014-07-01
+    expect(heights[0]).toBeCloseTo(50 / 365, 6);
+    expect(heights[1]).toBeCloseTo(203 / 365, 6);
+    expect(xml).toMatch(/<epoch transitionTime="[^"]+">\s*<parameter id="clock.epoch1.rate" value="0.001" lower="0"\/>/);
+    expect(xml).toMatch(/<rate>\s*<parameter id="clock.epoch3.rate" value="0.001" lower="0"\/>\s*<\/rate>\s*<\/rateEpochBranchRates>/);
+    expect(xml).toMatch(/<down>\s*<parameter idref="clock.epoch1.rate"\/>\s*<parameter idref="clock.epoch2.rate"\/>\s*<parameter idref="clock.epoch3.rate"\/>/);
+    expect(result.parameters.find((p) => p.id === 'clock.epoch2.rate')?.decl.description).toBe(
+      'Substitution rate in epoch 2 (2014-07-01 to 2014-12-01)',
+    );
+
+    doc.timelines![0].dates = ['2016-01-01'];
+    expect(errorsOf(doc)[0]).toBe(
+      'Local clocks in epochs (parameters): timeline "eras": 2016-01-01 is not before the most recent sample',
+    );
+
+    const undated = project(UNDATED);
+    undated.timelines = [{ id: 't1', name: 'eras', kind: 'heights', heights: [0.1] }];
+    setSetting(undated, registry, 'models.clock.module', 'clock.epoch');
+    setSetting(undated, registry, 'models.clock.timeline', 'eras');
+    expect(errorsOf(undated)).toEqual([
+      'Local clocks in epochs need dated tips, so that the epochs and the rates are on a scale of time',
+    ]);
+  });
+
+  it('birth-death with serial sampling starts the tree below the origin', () => {
+    const doc = designed();
+    setSetting(doc, registry, 'models.treePrior.module', 'treePrior.birthDeathSampling');
+    const xml = xmlOf(doc);
+    checkReferences(xml);
+    // the sampling dates span 325 days; the tree starts at twice that and the origin a quarter above
+    const height = Number(/<coalescentSimulator id="startingTree" height="([^"]+)">/.exec(xml)?.[1]);
+    const origin = Number(/<parameter id="bdss.origin" value="([^"]+)"/.exec(xml)?.[1]);
+    expect(height).toBeCloseTo((2 * 325) / 365, 5);
+    expect(origin).toBeCloseTo(1.25 * height, 5);
+    expect(xml).toMatch(/<speciationLikelihood id="speciation">\s*<model>\s*<birthDeathSerialSampling idref="bdss"\/>/);
+    expect(xml).toMatch(/<randomWalkOperator windowSize="0.1" boundaryCondition="reflecting" weight="1">\s*<parameter idref="bdss.relativeDeathRate"\/>/);
+    expect(xml).toMatch(/<prior id="prior">[\s\S]*<speciationLikelihood idref="speciation"\/>\s*<\/prior>/);
+    expect(xml).not.toContain('coalescentLikelihood');
+
+    // a height set for the starting tree is kept
+    setSetting(doc, registry, 'models.startingTree.rootHeight', '5');
+    expect(xmlOf(doc)).toContain('<coalescentSimulator id="startingTree" height="5">');
+    // and other tree priors leave the simulated height alone
+    expect(xmlOf(designed())).toContain('<coalescentSimulator id="startingTree">');
+  });
+
+  it('birth-death-sampling in epochs', () => {
+    const doc = designed();
+    setSetting(doc, registry, 'models.treePrior.module', 'treePrior.episodicBirthDeathSampling');
+    const constant = xmlOf(doc);
+    checkReferences(constant);
+    expect(constant).toContain('<parameter id="ebds.birthRate" value="3" lower="0"/>');
+    expect(constant).not.toContain('<grids>');
+
+    setSetting(doc, registry, 'models.treePrior.timeline', 'eras');
+    setSetting(doc, registry, 'models.treePrior.treatmentProbability', '0.5');
+    const xml = xmlOf(doc);
+    checkReferences(xml);
+    expect(xml).toContain('<parameter id="ebds.birthRate" dimension="3" value="3" lower="0"/>');
+    expect(xml).toContain('<parameter id="ebds.deathRate" dimension="3" value="1" lower="0"/>');
+    expect(xml).toMatch(/<treatmentProbability>\s*<parameter dimension="3" value="0.5" lower="0" upper="1"\/>/);
+    expect(xml).toMatch(/<numGridPoints>\s*<parameter value="3"\/>/);
+    const grid = /<grids>\s*<parameter value="([^"]+)"\/>/.exec(xml)?.[1].split(' ').map(Number) ?? [];
+    expect(grid).toHaveLength(3);
+    expect(grid[0]).toBe(0);
+    expect(grid[2]).toBeCloseTo(203 / 365, 6);
+    expect(xml).toMatch(/<birthDeathLikelihood id="birthDeathLikelihood" useNewLoop="true">/);
+    expect(xml).toMatch(/<log id="fileLog"[^>]*>[\s\S]*<birthDeathCompoundParameterLogger idref="ebds.Re"\/>/);
+  });
+
+  it('survive a round trip through JSON and are optional in older documents', () => {
+    const doc = designed();
+    setSetting(doc, registry, 'models.clock.module', 'clock.localClade');
+    setSetting(doc, registry, 'models.clock.clades', 'Liberia');
+    const copy = JSON.parse(JSON.stringify(doc)) as AnalysisDocument;
+    expect(xmlOf(copy)).toBe(xmlOf(doc));
+
+    const older = project();
+    delete older.taxonSets;
+    delete older.timelines;
+    expect(xmlOf(older)).toBe(xmlOf(project()));
   });
 });
 

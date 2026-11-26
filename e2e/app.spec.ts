@@ -103,7 +103,7 @@ test('partition, choose models, edit priors and operators, then save and reopen 
   await expect(preview).toContainText('id="ucld.stdev"');
 
   await go(page, 'Tree prior');
-  await main.locator('section.card', { hasText: 'Tree prior' }).getByLabel('Model', { exact: true }).selectOption('treePrior.skygrid');
+  await main.locator('section.card').filter({ has: page.getByRole('heading', { name: 'Tree prior', exact: true }) }).getByLabel('Model', { exact: true }).selectOption('treePrior.skygrid');
   await page.getByLabel('Number of population sizes').fill('20');
   await expect(preview).toContainText('id="skygrid.logPopSize" dimension="20"');
 
@@ -158,5 +158,99 @@ test('partition, choose models, edit priors and operators, then save and reopen 
   await page.screenshot({ path: 'out/app-priors.png' });
   await go(page, 'Partitions');
   await page.screenshot({ path: 'out/app-partitions.png' });
+  expect(problems).toEqual([]);
+});
+
+test('design taxon sets and a timeline, and use them in a local clock and a birth-death model', async ({ page }) => {
+  const problems = watchConsole(page);
+  const main = page.getByRole('main');
+  const preview = page.getByLabel('XML preview').locator('pre');
+  const shot = async (name: string): Promise<void> => {
+    if (process.env.SHOTS) await main.locator('section.card').last().screenshot({ path: join(process.env.SHOTS, `${name}.png`) });
+  };
+
+  await page.goto('/');
+  await page.locator('.dropzone input[type=file]').setInputFiles(FASTA);
+  await expect(page.getByText('71 taxa in total')).toBeVisible();
+
+  // a taxon set picked with the filter, and constrained to be a clade
+  await go(page, 'Taxon sets');
+  await page.getByRole('button', { name: 'New taxon set' }).click();
+  await page.getByLabel('Name').fill('Trinidad');
+  await page.getByLabel('Show taxa containing').fill('trinidad');
+  await page.getByRole('button', { name: 'Add all 7 shown' }).click();
+  await expect(page.getByRole('list', { name: 'Taxa in the set' }).getByRole('listitem')).toHaveCount(7);
+  await page.getByRole('list', { name: 'Taxa in the set' }).getByRole('button', { name: '1954_U52416_Trinidad54_Trinidad' }).click();
+  await expect(page.getByRole('list', { name: 'Taxa in the set' }).getByRole('listitem')).toHaveCount(6);
+  await page.getByLabel('Constrain these taxa to be a clade').check();
+  await expect(preview).toContainText('<taxa id="Trinidad">');
+  await expect(preview).toContainText('<monophylyStatistic id="monophyly(Trinidad)">');
+  await shot('taxon-sets');
+
+  // a name that cannot be an XML id is reported against the step
+  await page.getByLabel('Name').fill('Trinidad clade');
+  await expect(main.getByText('The taxon set has a name with spaces')).toBeVisible();
+  await expect(page.getByRole('navigation').getByTitle('Problems to fix')).toHaveText('1');
+  await page.getByLabel('Name').fill('Trinidad');
+
+  // a timeline with two transition dates
+  await go(page, 'Timelines');
+  await page.getByRole('button', { name: 'New timeline' }).click();
+  await page.getByLabel('Name').fill('eras');
+  await page.getByLabel('Epochs are given as').selectOption('dates');
+  await page.getByRole('button', { name: 'Add a date' }).click();
+  await page.getByRole('textbox', { name: 'Transition date 1' }).fill('1995-06-15');
+  await page.getByRole('button', { name: 'Add a date' }).click();
+  await page.getByRole('textbox', { name: 'Transition date 2' }).fill('2010-01-01');
+  await expect(main.getByText('2010-01-01 is not before the most recent sample')).toBeVisible();
+  await page.getByRole('textbox', { name: 'Transition date 2' }).fill('1980-01-01');
+  await expect(main.getByRole('cell', { name: '1980-01-01 to 1995-06-15' })).toBeVisible();
+  await expect(main.getByRole('img', { name: 'Timeline with 3 epochs' })).toBeVisible();
+  await shot('timelines');
+
+  // local clocks on clades need a taxon set
+  await go(page, 'Clock');
+  await page.getByLabel('Model', { exact: true }).selectOption('clock.localClade');
+  await expect(main.getByText('Clades with their own rate needs at least one taxon set')).toBeVisible();
+  await page.getByRole('checkbox', { name: /Trinidad/ }).check();
+  await expect(preview).toContainText('<localClockModel id="branchRates">');
+  await expect(preview).toContainText('<parameter id="Trinidad.rate"');
+  await shot('clock');
+
+  // the epoch clock takes the timeline
+  await page.getByLabel('Model', { exact: true }).selectOption('clock.epoch');
+  await page.getByLabel('Timeline').selectOption({ label: 'eras' });
+  await expect(preview).toContainText('<epoch transitionTime="29">');
+  await page.getByLabel('Model', { exact: true }).selectOption('clock.localClade');
+  await page.getByRole('checkbox', { name: /Trinidad/ }).check();
+
+  // birth-death-sampling in the epochs of the timeline
+  await go(page, 'Tree prior');
+  await main.locator('section.card').filter({ has: page.getByRole('heading', { name: 'Tree prior', exact: true }) }).getByLabel('Model', { exact: true }).selectOption('treePrior.episodicBirthDeathSampling');
+  await page.getByLabel('Timeline').selectOption({ label: 'eras' });
+  await expect(preview).toContainText('<parameter value="0 13.5479452055 29"/>');
+  await expect(preview).toContainText('<coalescentSimulator id="startingTree" height="138">');
+
+  await go(page, 'Priors');
+  await expect(main.getByText('Trinidad.rate')).toBeVisible();
+  await expect(main.getByText('ebds.birthRate')).toBeVisible();
+
+  await go(page, 'MCMC');
+  await page.getByLabel('Chain length').fill('2000');
+  await page.getByLabel('Analysis name').fill('YFV_m3');
+  await expect(page.getByRole('navigation').getByTitle('Problems to fix')).toHaveCount(0);
+
+  // the saved project gives the same XML from the command line
+  await go(page, 'Generate');
+  const dir = mkdtempSync(join(tmpdir(), 'beautique-e2e-'));
+  const fromApp = join(dir, 'app.xml');
+  const project = join(dir, 'project.json');
+  const fromCli = join(dir, 'cli.xml');
+  await saveDownload(page, 'Download YFV_m3.xml', fromApp);
+  await saveDownload(page, 'Save project', project);
+  execFileSync('node', ['packages/cli/dist/beautique.js', 'generate', '-t', project, '-o', fromCli]);
+  expect(readFileSync(fromApp, 'utf8')).toBe(readFileSync(fromCli, 'utf8'));
+  if (process.env.SHOTS) execFileSync('cp', [fromApp, join(process.env.SHOTS, 'YFV_m3.xml')]);
+
   expect(problems).toEqual([]);
 });

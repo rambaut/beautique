@@ -5,12 +5,16 @@ import {
   detachAlignment,
   detectDateSpec,
   generate,
+  schemaRefs,
   type AlignmentData,
   type AnalysisDocument,
   type GenerateResult,
   type Issue,
   type OperatorOverride,
   type ParameterOverride,
+  type SchemaRefs,
+  type TaxonSet,
+  type Timeline,
   type Slot,
 } from '@beautique/core';
 import { createRegistry, defaultTemplate } from '@beautique/modules';
@@ -20,6 +24,8 @@ export const registry = createRegistry();
 export type StepId =
   | 'data'
   | 'dates'
+  | 'taxonSets'
+  | 'timelines'
   | 'partitions'
   | 'substitution'
   | 'clock'
@@ -32,6 +38,8 @@ export type StepId =
 export const STEPS: { id: StepId; label: string }[] = [
   { id: 'data', label: 'Data' },
   { id: 'dates', label: 'Samples and dates' },
+  { id: 'taxonSets', label: 'Taxon sets' },
+  { id: 'timelines', label: 'Timelines' },
   { id: 'partitions', label: 'Partitions' },
   { id: 'substitution', label: 'Substitution' },
   { id: 'clock', label: 'Clock' },
@@ -77,6 +85,27 @@ class AppState {
 
   /** Live result of generating the current document, with sequences elided. */
   preview: GenerateResult = $derived.by(() => generate(this.document, registry, { elideSequences: true }));
+
+  /** The taxon sets of the document (made on first use for documents saved without any). */
+  get taxonSets(): TaxonSet[] {
+    return (this.doc.taxonSets ??= []);
+  }
+
+  get timelines(): Timeline[] {
+    return (this.doc.timelines ??= []);
+  }
+
+  /** What reference fields can point to. */
+  get refs(): SchemaRefs {
+    return schemaRefs(this.doc);
+  }
+
+  /** The date of the most recent sample in decimal years, when every tip is dated. */
+  get mostRecent(): number | undefined {
+    const taxa = this.preview.taxa;
+    if (taxa.length === 0 || taxa.some((t) => t.date === undefined)) return undefined;
+    return Math.max(...taxa.map((t) => t.date as number));
+  }
 
   get labels(): string[] {
     return this.alignments.flatMap((a) => a.sequences.map((s) => s.label));
@@ -138,7 +167,12 @@ class AppState {
     const parsed: unknown = JSON.parse(json);
     assertDocument(parsed);
     this.alignments = parsed.data.alignments;
-    this.doc = { ...parsed, data: { ...parsed.data, alignments: [] } };
+    this.doc = {
+      ...parsed,
+      taxonSets: parsed.taxonSets ?? [],
+      timelines: parsed.timelines ?? [],
+      data: { ...parsed.data, alignments: [] },
+    };
     this.step = 'data';
   }
 
@@ -177,6 +211,7 @@ class AppState {
     if (path.startsWith('mcmc.') || path === 'name') return 'mcmc';
     if (path.startsWith('parameters.')) return 'priors';
     if (path.startsWith('operators.')) return 'operators';
+    if (path === 'taxonSets' || path === 'timelines') return path;
     const m = /^models\.([^.]+)\./.exec(path);
     const instance = m && this.doc.components.find((c) => c.id === m[1]);
     if (instance) return SLOT_STEP[instance.slot];

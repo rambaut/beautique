@@ -43,10 +43,14 @@ export function rateParameter(ctx: ModuleContext, name: string, description: str
   };
 }
 
-/** Operators on the overall rate: a scale move, and one that trades rate against tree height. */
-export function rateOperators(ctx: ModuleContext, name: string): OperatorDecl[] {
+/**
+ * Operators on the overall rate: a scale move, and one that trades rates against
+ * tree height. `alsoDown` names further rate parameters that move with the rate.
+ */
+export function rateOperators(ctx: ModuleContext, name: string, alsoDown: string[] = []): OperatorDecl[] {
   if (!rateEstimated(ctx)) return [];
   const { el } = ctx.xml;
+  const down = [name, ...alsoDown];
   return [
     {
       key: `${name}.scale`,
@@ -57,11 +61,14 @@ export function rateOperators(ctx: ModuleContext, name: string): OperatorDecl[] 
     },
     {
       key: `${name}.upDown`,
-      label: `upDown(node heights / ${ctx.id(name)})`,
+      label: `upDown(node heights / ${down.map((d) => ctx.id(d)).join(', ')})`,
       element: 'upDownOperator',
       tuning: { name: 'scaleFactor', value: 0.75 },
       weight: 3,
-      children: [el('up', {}, [ctx.ref('allInternalNodeHeights')]), el('down', {}, [ctx.paramRef(name)])],
+      children: [
+        el('up', {}, [ctx.ref('allInternalNodeHeights')]),
+        el('down', {}, down.map((d) => ctx.paramRef(d))),
+      ],
     },
   ];
 }

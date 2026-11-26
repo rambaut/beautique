@@ -290,6 +290,7 @@ button.link:hover {
 }
 
 input[type='text'],
+input[type='search'],
 input[type='number'],
 select {
   min-width: 14rem;
@@ -481,4 +482,85 @@ td .control {
 
 td.nowrap {
   white-space: nowrap;
+}
+
+/* taxon set and timeline designers */
+fieldset.checks {
+  border: 0;
+  padding: 0;
+  margin: 0 0 0.9rem;
+}
+fieldset.checks legend {
+  font-weight: 600;
+  padding: 0;
+  margin-bottom: 0.3rem;
+}
+fieldset.checks label.check {
+  display: block;
+  font-weight: 400;
+  margin: 0.15rem 0;
+}
+fieldset.checks .control {
+  margin-bottom: 0.3rem;
+}
+tr.selected td {
+  background: var(--accent-soft);
+}
+.picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+}
+.picker ul {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem;
+  height: 18rem;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.picker li button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: none;
+  color: inherit;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.picker li button:hover {
+  background: var(--accent-soft);
+}
+svg.timeline {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  margin: 0.5rem 0;
+}
+svg.timeline .samples {
+  fill: var(--muted);
+  opacity: 0.45;
+}
+svg.timeline .axis {
+  stroke: var(--text);
+  stroke-width: 1;
+}
+svg.timeline .transition {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+svg.timeline text {
+  fill: var(--muted);
+  font-size: 10px;
+}
+svg.timeline text.epoch {
+  fill: var(--accent);
+  font-weight: 600;
 }

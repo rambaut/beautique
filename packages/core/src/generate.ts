@@ -5,12 +5,20 @@
  */
 
 import { countSites, deriveTaxa, taxonKey, type SiteRange, type Taxon } from './data';
-import { findInstance, mcmcSchema, type AnalysisDocument, type McmcSettings, type Partition } from './document';
+import {
+  findInstance,
+  mcmcSchema,
+  schemaRefs,
+  type AnalysisDocument,
+  type McmcSettings,
+  type Partition,
+} from './document';
 import {
   MODULE_API_VERSION,
   TOP_LEVEL_SECTIONS,
   type Contributions,
   type DataSummary,
+  type FactValue,
   type Issue,
   type ModuleContext,
   type ModuleDefinition,
@@ -23,9 +31,11 @@ import {
 import { priorElement, validatePrior } from './priors';
 import type { ModuleRegistry } from './registry';
 import { resolveOptions, validateOptions, type OptionValues } from './schema';
+import { nameProblem, nestTaxonSets, type TaxonSetInfo } from './taxonsets';
+import { resolveTimeline, type TimelineResolution } from './timeline';
 import { comment, el, formatNumbers, ref, serialize, type XmlElement, type XmlNode } from './xml';
 
-export const BEAUTIQUE_VERSION = '0.2.0';
+export const BEAUTIQUE_VERSION = '0.3.0';
 /** The BEAST X version written to the `<beast version>` attribute. */
 export const BEAST_XML_VERSION = '10.6.0';
 
@@ -74,7 +84,7 @@ interface Entry {
   /** Instance id, or a synthetic id for blocks the pipeline itself adds. */
   owner: string;
   label: string;
-  slot: Slot | 'relativeRates';
+  slot: Slot | 'relativeRates' | 'taxonSets';
   prefix: string;
   module?: ModuleDefinition;
   ctx?: ModuleContext;
@@ -103,6 +113,7 @@ const ENTRY_ORDER: Entry['slot'][] = [
   'relativeRates',
   'clock',
   'tree',
+  'taxonSets',
   'startingTree',
   'treePrior',
 ];
@@ -144,6 +155,64 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
     const dates = taxa.map((t) => t.date as number);
     data.dateRange = { min: Math.min(...dates), max: Math.max(...dates) };
   }
+
+  // ---- taxon sets and timelines ---------------------------------------------
+  const taxaByKey = new Map(taxa.map((t) => [t.key, t]));
+  const taxonSets = doc.taxonSets ?? [];
+  const setMembers = new Map<string, Taxon[]>();
+  for (const set of taxonSets) {
+    const problem = nameProblem(set.name, taxonSets.filter((s) => s !== set).map((s) => s.name));
+    if (problem) error(`Taxon set "${set.name}" ${problem}`, 'taxonSets');
+    if (!hasData) continue;
+    const members = [...new Set(set.taxa)].flatMap((key) => taxaByKey.get(key) ?? []);
+    setMembers.set(set.id, members);
+    const unknown = new Set(set.taxa).size - members.length;
+    if (unknown > 0) {
+      issues.push({
+        severity: 'warning',
+        message: `Taxon set "${set.name}" lists ${unknown} taxa that are not in the data; they are left out`,
+        path: 'taxonSets',
+      });
+    }
+    if (members.length === 0) error(`Taxon set "${set.name}" is empty`, 'taxonSets');
+    else if (set.monophyletic && members.length < 2) {
+      error(`Taxon set "${set.name}" needs at least two taxa to be constrained as a clade`, 'taxonSets');
+    }
+  }
+  const clades = taxonSets.filter((s) => s.monophyletic && (setMembers.get(s.id)?.length ?? 0) >= 2);
+  const nesting = nestTaxonSets(clades.map((s) => ({ id: s.id, taxa: (setMembers.get(s.id) ?? []).map((t) => t.key) })));
+  for (const [a, b] of nesting.conflicts) {
+    const name = (id: string): string => taxonSets.find((s) => s.id === id)?.name ?? id;
+    error(
+      `Taxon sets "${name(a)}" and "${name(b)}" cannot both be clades: they overlap without one containing the other`,
+      'taxonSets',
+    );
+  }
+  const taxonSetInfo: TaxonSetInfo[] = taxonSets.map((set) => ({
+    id: set.id,
+    name: set.name,
+    size: setMembers.get(set.id)?.length ?? 0,
+    monophyletic: set.monophyletic === true,
+    parent: nesting.parent.get(set.id) ?? null,
+  }));
+
+  const timelineCache = new Map<string, TimelineResolution>();
+  const timelineOf = (id: unknown): TimelineResolution => {
+    const timeline = (doc.timelines ?? []).find((t) => t.id === id);
+    if (!timeline) return { problems: ['choose a timeline'] };
+    let resolution = timelineCache.get(timeline.id);
+    if (!resolution) {
+      resolution = resolveTimeline(timeline, data.dateRange?.max);
+      timelineCache.set(timeline.id, resolution);
+    }
+    return resolution;
+  };
+  for (const timeline of doc.timelines ?? []) {
+    const others = (doc.timelines ?? []).filter((t) => t !== timeline).map((t) => t.name);
+    const problem = nameProblem(timeline.name, others);
+    if (problem) error(`Timeline "${timeline.name}" ${problem}`, 'timelines');
+  }
+  const refs = schemaRefs(doc);
 
   const alignmentIds = new Map<string, string>();
   const nchar = new Map<string, number>();
@@ -211,6 +280,8 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
     if (providers.length > 1) throw new Error(`more than one model provides "${name}"`);
     return providers[0].element;
   };
+
+  const facts = new Map<string, FactValue>();
 
   /** Apply user overrides to declared parameters and operators, and check the results. */
   const resolveParams = (entry: Entry, decls: ParameterDecl[]): void => {
@@ -286,7 +357,7 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
     const prefix = inSlot > 1 ? `${safeId(instance.name)}.` : '';
     const label = inSlot > 1 ? `${module.label} (${instance.name})` : module.label;
     const resolved = resolveOptions(module.options ?? {}, instance.options);
-    for (const issue of validateOptions(module.options ?? {}, resolved)) {
+    for (const issue of validateOptions(module.options ?? {}, resolved, refs)) {
       error(`${label}: ${issue.message}`, `models.${instance.id}.${issue.field}`);
     }
 
@@ -302,6 +373,20 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
       instanceName: instance.name,
       prefix,
       data,
+      taxonSets: taxonSetInfo,
+      taxonSet: (setId) => {
+        const set = taxonSetInfo.find((s) => s.id === setId);
+        if (!set) throw new Error('choose a taxon set');
+        return set;
+      },
+      timeline: (timelineId) => {
+        const resolution = timelineOf(timelineId);
+        if (!resolution.timeline) {
+          const name = (doc.timelines ?? []).find((t) => t.id === timelineId)?.name;
+          throw new Error(name === undefined ? resolution.problems[0] : `timeline "${name}": ${resolution.problems.join('; ')}`);
+        }
+        return resolution.timeline;
+      },
       operatorStrategy: mcmc.operatorStrategy,
       optionPath: (name) => `models.${instance.id}.${name}`,
       id: (local) => prefix + local,
@@ -317,6 +402,7 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
       },
       paramRef: (name) => ref('parameter', findParam(name).id),
       ref: (name) => lookup(name),
+      fact: (name) => facts.get(name),
       xml: { el, ref, comment },
     };
     entries.push(entry);
@@ -335,6 +421,10 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
     }
   };
 
+  const publishedFacts = entries.map((entry) => run(entry, 'facts', (m, ctx) => m.facts?.(ctx) ?? {}, {}));
+  for (const values of publishedFacts) {
+    for (const [name, value] of Object.entries(values)) if (!facts.has(name)) facts.set(name, value);
+  }
   for (const entry of entries) {
     resolveParams(entry, run(entry, 'parameters', (m, ctx) => m.parameters?.(ctx) ?? [], []));
   }
@@ -350,6 +440,47 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
     issues.push(...run(entry, 'validation', (m, ctx) => m.validate?.(ctx) ?? [], []));
     entry.contributions = run(entry, 'XML', (m, ctx) => m.generate(ctx), {});
     resolveOperators(entry, run(entry, 'operators', (m, ctx) => m.operators?.(ctx) ?? [], []));
+  }
+
+  // ---- taxon set statistics ---------------------------------------------------
+  // Each set gets the time of its most recent common ancestor; clades are enforced in the prior.
+  if (taxonSetInfo.some((s) => s.size > 0)) {
+    try {
+      const tree = lookup('treeModel');
+      const contributions: Required<Pick<Contributions, 'treeStatistics' | 'prior' | 'fileLog'>> = {
+        treeStatistics: [],
+        prior: [],
+        fileLog: [],
+      };
+      for (const set of taxonSetInfo.filter((s) => s.size > 0)) {
+        const mrca = (): XmlElement => el('mrca', {}, [ref('taxa', set.name)]);
+        contributions.treeStatistics.push(el('tmrcaStatistic', { id: `tmrca(${set.name})` }, [mrca(), tree]));
+        contributions.fileLog.push(ref('tmrcaStatistic', `tmrca(${set.name})`));
+        if (dated) {
+          contributions.treeStatistics.push(
+            el('tmrcaStatistic', { id: `age(${set.name})`, absolute: true }, [mrca(), tree]),
+          );
+          contributions.fileLog.push(ref('tmrcaStatistic', `age(${set.name})`));
+        }
+        if (set.monophyletic) {
+          contributions.treeStatistics.push(el('monophylyStatistic', { id: `monophyly(${set.name})` }, [mrca(), tree]));
+          contributions.prior.push(
+            el('booleanLikelihood', {}, [ref('monophylyStatistic', `monophyly(${set.name})`)]),
+          );
+        }
+      }
+      entries.push({
+        owner: 'taxonSets',
+        label: 'Taxon sets',
+        slot: 'taxonSets',
+        prefix: '',
+        params: [],
+        operators: [],
+        contributions,
+      });
+    } catch {
+      // No tree model: already reported as a missing model.
+    }
   }
 
   // ---- site models and relative rates --------------------------------------
@@ -468,6 +599,10 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
         ),
       ),
     );
+
+    for (const set of taxonSets) {
+      top.push(el('taxa', { id: set.name }, (setMembers.get(set.id) ?? []).map((t) => ref('taxon', t.id))));
+    }
 
     for (const alignment of doc.data.alignments) {
       const length = nchar.get(alignment.id) as number;
@@ -621,6 +756,22 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
     error(e instanceof Error ? e.message : String(e));
     return result;
   }
+
+  // Every id in the XML must be unique (taxon ids are checked with the data).
+  const seenIds = new Set<string>();
+  const duplicates = new Set<string>();
+  const checkIds = (node: XmlNode): void => {
+    if (node.kind !== 'element' || node.name === 'taxon') return;
+    const id = node.attrs.id;
+    if (typeof id === 'string') {
+      if (seenIds.has(id)) duplicates.add(id);
+      seenIds.add(id);
+    }
+    node.children.forEach(checkIds);
+  };
+  top.forEach(checkIds);
+  for (const id of duplicates) error(`The id "${id}" is used by more than one element of the analysis; rename one of them`);
+  if (duplicates.size > 0) return result;
 
   result.xml =
     '<?xml version="1.0" standalone="yes"?>\n' +

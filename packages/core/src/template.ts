@@ -4,9 +4,10 @@
  *
  * Paths: `name`, `mcmc.<setting>`, `models.<instanceId>.<option>`, and
  * `models.<instanceId>.module` to choose which module an instance uses.
+ * Options that refer to taxon sets or timelines take their names.
  */
 
-import { mcmcSchema, type AnalysisDocument } from './document';
+import { mcmcSchema, schemaRefs, type AnalysisDocument } from './document';
 import { SLOT_LABELS, type Slot } from './module-api';
 import { setInstanceModule } from './partitions';
 import type { ModuleRegistry } from './registry';
@@ -134,8 +135,9 @@ export function setSetting(doc: AnalysisDocument, registry: ModuleRegistry, path
   }
   if (!field || !assign) throw new Error(`Unknown setting "${path}"`);
 
-  const typed = typeof value === 'string' ? coerceValue(field, value) : value;
-  const message = validateField(field, typed);
+  const refs = schemaRefs(doc);
+  const typed = typeof value === 'string' ? coerceValue(field, value, refs) : value;
+  const message = validateField(field, typed, refs);
   if (message) throw new Error(`${path}: ${field.label} ${message}`);
   assign(typed);
 }
