@@ -10,6 +10,7 @@ import type { PriorSpec, Slot } from './module-api';
 import type { OptionsSchema, OptionValues, SchemaRefs } from './schema';
 import type { TaxonSet } from './taxonsets';
 import type { Timeline } from './timeline';
+import type { Trait } from './traits';
 
 export const DOCUMENT_FORMAT = 'beautique';
 export const DOCUMENT_FORMAT_VERSION = 1;
@@ -85,6 +86,8 @@ export interface AnalysisDocument {
   taxonSets?: TaxonSet[];
   /** Named divisions of time into epochs that models refer to. */
   timelines?: Timeline[];
+  /** Per-taxon values analysed with a trait model. */
+  traits?: Trait[];
   partitions: Partition[];
   tree: TreeSpec;
   components: ModelInstance[];

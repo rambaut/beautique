@@ -37,6 +37,11 @@ function flatten(children: XmlChild[], out: XmlNode[]): XmlNode[] {
   return out;
 }
 
+/** Flatten children into a list of nodes: strings become text, nested arrays are spread, falsy values dropped. */
+export function nodes(children: XmlChild[]): XmlNode[] {
+  return flatten(children, []);
+}
+
 /** Create an element. Attributes with null/undefined values are omitted on output. */
 export function el(name: string, attrs: Record<string, AttrValue> = {}, children: XmlChild[] = []): XmlElement {
   return { kind: 'element', name, attrs, children: flatten(children, []) };

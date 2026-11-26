@@ -10,6 +10,7 @@
   import PriorsStep from './steps/PriorsStep.svelte';
   import TaxonSetsStep from './steps/TaxonSetsStep.svelte';
   import TimelinesStep from './steps/TimelinesStep.svelte';
+  import TraitsStep from './steps/TraitsStep.svelte';
 
   let showPreview = $state(true);
 
@@ -73,6 +74,8 @@
       <TaxonSetsStep />
     {:else if app.step === 'timelines'}
       <TimelinesStep />
+    {:else if app.step === 'traits'}
+      <TraitsStep />
     {:else if app.step === 'partitions'}
       <PartitionsStep />
     {:else if app.step === 'substitution' || app.step === 'clock' || app.step === 'tree'}

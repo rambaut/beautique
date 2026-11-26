@@ -10,6 +10,7 @@
 import type { OptionsSchema, OptionValues } from './schema';
 import type { TaxonSetInfo } from './taxonsets';
 import type { ResolvedTimeline } from './timeline';
+import type { TraitInfo, TraitType } from './traits';
 import type { AttrValue, XmlChild, XmlComment, XmlElement, XmlNode } from './xml';
 
 export const MODULE_API_VERSION = 1;
@@ -22,6 +23,7 @@ export const SLOTS = [
   'tree',
   'startingTree',
   'treePrior',
+  'trait',
 ] as const;
 export type Slot = (typeof SLOTS)[number];
 
@@ -32,6 +34,7 @@ export const SLOT_LABELS: Record<Slot, string> = {
   tree: 'Tree',
   startingTree: 'Starting tree',
   treePrior: 'Tree prior',
+  trait: 'Trait model',
 };
 
 /**
@@ -40,6 +43,8 @@ export const SLOT_LABELS: Record<Slot, string> = {
  * blocks that the pipeline builds.
  */
 export const TOP_LEVEL_SECTIONS = [
+  /** Data types and patterns for trait data. */
+  'dataType',
   'treePriorModel',
   'startingTree',
   'treeModel',
@@ -48,6 +53,9 @@ export const TOP_LEVEL_SECTIONS = [
   'clock',
   'substitutionModel',
 ] as const;
+
+/** Top-level blocks written after the tree likelihoods of the sequence data (trait models and their likelihoods). */
+export const LATE_SECTIONS = ['traitModel'] as const;
 
 export const NESTED_SECTIONS = [
   /** Children of the `<siteModel>` this module belongs to (site heterogeneity modules). */
@@ -66,8 +74,12 @@ export const NESTED_SECTIONS = [
   'treeLog',
 ] as const;
 
-export type Section = (typeof TOP_LEVEL_SECTIONS)[number] | (typeof NESTED_SECTIONS)[number];
-export type Contributions = Partial<Record<Section, XmlNode[]>>;
+export type Section =
+  | (typeof TOP_LEVEL_SECTIONS)[number]
+  | (typeof LATE_SECTIONS)[number]
+  | (typeof NESTED_SECTIONS)[number];
+/** What `generate` returns: for each section, the nodes to add. Nested arrays are flattened and falsy values dropped. */
+export type Contributions = Partial<Record<Section, XmlChild[]>>;
 
 export type PriorSpec =
   | { type: 'logNormal'; mu: number; sigma: number; offset?: number }
@@ -136,6 +148,11 @@ export interface ModuleContext {
   /** Id prefix for this instance: empty when it is the only one in its slot. */
   prefix: string;
   data: DataSummary;
+  /**
+   * For a module in the `trait` slot: the trait it analyses. Each taxon carries
+   * the value as `<attr name=trait.name>`, and `prefix` is the trait's name and a dot.
+   */
+  trait?: TraitInfo;
   /** The taxon sets of the analysis. Each is written as `<taxa id=name>` before any module's XML. */
   taxonSets: TaxonSetInfo[];
   /** The taxon set an option of type `taxonSetRef` refers to. Throws if there is none with that id. */
@@ -184,6 +201,8 @@ export interface ModuleDefinition {
   citation?: string;
   /** Earliest BEAST X version that can run this module's XML. */
   minBeast?: string;
+  /** For a module in the `trait` slot: the type of trait it analyses. */
+  traitType?: TraitType;
   /** True when the module provides gradient-based operators for the `hmc` strategy. */
   supportsHmc?: boolean;
   options?: OptionsSchema;

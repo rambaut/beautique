@@ -32,6 +32,7 @@ export function defaultTemplate(): AnalysisDocument {
     },
     taxonSets: [],
     timelines: [],
+    traits: [],
     partitions: [
       {
         id: 'partition',

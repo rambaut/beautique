@@ -14,13 +14,15 @@
     /** Optional slots offer "None". */
     optional?: boolean;
     onmodule: (moduleId: string | null) => void;
+    /** Offer only the modules for this type of trait. */
+    traitType?: 'discrete' | 'continuous';
     /** Rendered as a plain section inside another card. */
     nested?: boolean;
     children?: Snippet;
   }
-  let { kind, instanceId, qualifier = '', optional = false, onmodule, nested = false, children }: Props = $props();
+  let { kind, instanceId, qualifier = '', optional = false, onmodule, traitType, nested = false, children }: Props = $props();
 
-  const modules = $derived(registry.bySlot(kind));
+  const modules = $derived(registry.bySlot(kind).filter((m) => traitType === undefined || m.traitType === undefined || m.traitType === traitType));
   const instance = $derived(app.doc.components.find((c) => c.id === instanceId));
   const module = $derived(instance ? registry.get(instance.module) : undefined);
   const selectId = $derived(`module-${kind}-${instanceId ?? 'none'}${qualifier}`);

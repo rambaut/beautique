@@ -3,12 +3,16 @@ import { basename, extname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
+  addTrait,
   alignmentFromText,
   assertDocument,
   bindData,
   deriveTaxa,
   generate,
   listSettings,
+  looksLikeTable,
+  parseTable,
+  parseValueSource,
   setCodonScheme,
   setSetting,
   SLOT_LABELS,
@@ -17,6 +21,7 @@ import {
   type AnalysisDocument,
   type ModuleDefinition,
   type ModuleRegistry,
+  type TraitType,
   type TimeUnit,
   type Timeline,
 } from '@beautique/core';
@@ -32,6 +37,14 @@ Usage:
 Options for generate:
   -t, --template <file>     Template or project (JSON). Default: the built-in template
   -d, --data <file>         Aligned sequences (FASTA or NEXUS); repeat for several files
+      --metadata <file>     A table of metadata about the taxa (CSV or TSV with a header row;
+                            the first column identifies the taxon); repeatable
+      --discrete-trait <name=source>    Analyse a trait with discrete states. The source is the
+                            name of a metadata column, or field:N for the Nth field of the taxon
+                            label (field:-1 for the last; field:N:_ to split on "_"); repeatable
+      --continuous-trait <name=source,source>   Analyse a continuous trait, with a source for
+                            each dimension (latitude,longitude for coordinates); repeatable
+      --date-column <name>  Read sampling dates from this metadata column
       --codon <scheme>      Partition by codon position: 12+3 or 1+2+3
   -o, --output <file>       Output file. Default: <name>.xml
   -n, --name <name>         Analysis name (stem of BEAST's output files)
@@ -43,7 +56,8 @@ Options for generate:
                               2020-03-23,2020-11-05   transitions at these dates
                               ago:0.5,1,2       transitions this many years before the last sample
   -s, --set <path=value>    Set a setting; repeatable (see "describe" for paths). Settings that
-                            refer to taxon sets or timelines take their names
+                            refer to taxon sets or timelines take their names. The model of a
+                            trait is models.trait-<name>
       --date-field <n>      Field of the taxon label holding the date (1 = first, -1 = last)
       --date-delimiter <c>  Delimiter that separates label fields for dates
       --no-dates            Do not read dates from taxon labels
@@ -119,6 +133,18 @@ async function addTaxonSet(doc: AnalysisDocument, option: string, text: string, 
   doc.taxonSets.push({ id: `taxonset-${name}`, name, taxa: keys, ...(monophyletic ? { monophyletic: true } : {}) });
 }
 
+function addTraitOption(doc: AnalysisDocument, option: string, text: string, type: TraitType): void {
+  const [name, sources] = splitAssignment(option, text);
+  doc.traits = (doc.traits ?? []).filter((t) => t.name !== name);
+  doc.components = doc.components.filter((c) => c.slot !== 'trait' || (doc.traits ?? []).some((t) => t.model === c.id));
+  addTrait(doc, {
+    name,
+    type,
+    sources: (type === 'discrete' ? [sources] : sources.split(',')).map((s) => parseValueSource(s, doc.data)),
+    module: type === 'discrete' ? 'trait.discrete' : 'trait.continuous',
+  });
+}
+
 function addTimeline(doc: AnalysisDocument, text: string): void {
   const [name, spec] = splitAssignment('--timeline', text);
   const base = { id: `timeline-${name}`, name };
@@ -144,6 +170,10 @@ async function main(argv: string[]): Promise<number> {
       data: { type: 'string', short: 'd', multiple: true },
       // accepted as an alias of --data
       fasta: { type: 'string', short: 'f', multiple: true },
+      metadata: { type: 'string', multiple: true },
+      'discrete-trait': { type: 'string', multiple: true },
+      'continuous-trait': { type: 'string', multiple: true },
+      'date-column': { type: 'string' },
       codon: { type: 'string' },
       output: { type: 'string', short: 'o' },
       name: { type: 'string', short: 'n' },
@@ -203,6 +233,15 @@ async function main(argv: string[]): Promise<number> {
     throw new UsageError('No sequence data: give at least one --data file');
   }
 
+  for (const [i, path] of (values.metadata ?? []).entries()) {
+    const content = await readFile(path, 'utf8');
+    if (!looksLikeTable(content)) throw new UsageError(`${path} is not a CSV or TSV table`);
+    const tables = (doc.data.tables ??= []);
+    let n = tables.length + i + 1;
+    while (tables.some((t) => t.id === `table-${n}`)) n++;
+    tables.push(parseTable(content, `table-${n}`, basename(path, extname(path))));
+  }
+
   if (values.codon !== undefined) {
     if (values.codon !== '12+3' && values.codon !== '1+2+3') throw new UsageError('--codon must be 12+3 or 1+2+3');
     for (const alignment of doc.data.alignments) setCodonScheme(doc, alignment, values.codon);
@@ -210,6 +249,10 @@ async function main(argv: string[]): Promise<number> {
 
   if (values['no-dates']) {
     doc.data.dates = { ...doc.data.dates, mode: 'none' };
+  } else if (values['date-column'] !== undefined) {
+    const source = parseValueSource(values['date-column'], doc.data);
+    if (source.kind !== 'column') throw new UsageError('--date-column takes the name of a metadata column');
+    doc.data.dates = { ...doc.data.dates, mode: 'column', table: source.table, column: source.column };
   } else if (values['date-field'] !== undefined) {
     const n = Number(values['date-field']);
     if (!Number.isInteger(n) || n === 0) throw new UsageError('--date-field must be a non-zero whole number');
@@ -225,6 +268,8 @@ async function main(argv: string[]): Promise<number> {
   for (const text of values['taxon-set'] ?? []) await addTaxonSet(doc, '--taxon-set', text, false);
   for (const text of values.clade ?? []) await addTaxonSet(doc, '--clade', text, true);
   for (const text of values.timeline ?? []) addTimeline(doc, text);
+  for (const text of values['discrete-trait'] ?? []) addTraitOption(doc, '--discrete-trait', text, 'discrete');
+  for (const text of values['continuous-trait'] ?? []) addTraitOption(doc, '--continuous-trait', text, 'continuous');
 
   if (values.name) setSetting(doc, registry, 'name', values.name);
   const given = new Set<string>(values.name ? ['name'] : []);

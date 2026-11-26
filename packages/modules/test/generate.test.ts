@@ -66,6 +66,8 @@ describe('built-in modules', () => {
       'startingTree.random',
       'substitution.gtr',
       'substitution.hky',
+      'trait.continuous',
+      'trait.discrete',
       'tree.timeTree',
       'treePrior.birthDeathSampling',
       'treePrior.constant',
@@ -425,7 +427,6 @@ describe('taxon sets and timelines', () => {
     );
     const result = generate(doc, registry);
     expect(result.issues.map((i) => `${i.severity}: ${i.message}`)).toEqual([
-      'error: Taxon set "Liberia" has the same name as another',
       'error: Taxon set "Liberia" has the same name as another',
       'error: Taxon set "my set" has a name with spaces or the characters " \' < > &',
       'warning: Taxon set "my set" lists 1 taxa that are not in the data; they are left out',

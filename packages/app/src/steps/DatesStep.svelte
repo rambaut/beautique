@@ -25,6 +25,7 @@
         <select id="date-mode" bind:value={dates.mode}>
           <option value="none">Not dated</option>
           <option value="labelField">Read from the taxon label</option>
+          {#if app.tables.length > 0}<option value="column">Read from a metadata column</option>{/if}
         </select>
         <button onclick={() => app.detectDates()}>Detect</button>
       </div>
@@ -48,6 +49,32 @@
         </div>
         <p class="help">Dates may be yyyy-MM-dd, yyyy-MM, yyyy or a decimal year.</p>
       </div>
+    {/if}
+    {#if dates.mode === 'column'}
+      <div class="field">
+        <label for="date-column">Date column</label>
+        <div class="control">
+          <select
+            id="date-column"
+            value={dates.table && dates.column ? JSON.stringify([dates.table, dates.column]) : ''}
+            onchange={(e) => {
+              const [table, column] = JSON.parse(e.currentTarget.value || '["",""]') as [string, string];
+              dates.table = table;
+              dates.column = column;
+            }}
+          >
+            <option value="">Choose…</option>
+            {#each app.tables as table (table.id)}
+              {#each table.columns as column (column)}
+                <option value={JSON.stringify([table.id, column])}>{column} ({table.name})</option>
+              {/each}
+            {/each}
+          </select>
+        </div>
+        <p class="help">Dates may be yyyy-MM-dd, yyyy-MM, yyyy or a decimal year.</p>
+      </div>
+    {/if}
+    {#if dates.mode !== 'none'}
       {#if range}
         <p>
           {dated.length} of {taxa.length} taxa dated, from {range.min.toFixed(3)} to {range.max.toFixed(3)}

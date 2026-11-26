@@ -54,6 +54,7 @@ export function listSettings(doc: AnalysisDocument, registry: ModuleRegistry): S
     doc.tree.tree,
     doc.tree.startingTree,
     doc.tree.treePrior,
+    ...(doc.traits ?? []).map((t) => t.model),
   ]);
   for (const instance of doc.components) {
     if (!used.has(instance.id)) continue;

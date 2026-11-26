@@ -32,6 +32,14 @@ const cases = {
   'birth-death-sampling': [...M('treePrior', 'treePrior.birthDeathSampling')],
   'birth-death-sampling-constant-epoch': [...M('treePrior', 'treePrior.episodicBirthDeathSampling')],
   'birth-death-sampling-epochs': ['--timeline', 'decades=5x10years', ...M('treePrior', 'treePrior.episodicBirthDeathSampling'), ...S('models.treePrior.timeline', 'decades')],
+  'discrete-symmetric-bssvs': ['--metadata', 'examples/data/YFV_metadata.tsv', '--discrete-trait', 'country=country'],
+  'discrete-asymmetric-markov-jumps': ['--metadata', 'examples/data/YFV_metadata.tsv', '--discrete-trait', 'country=country', ...S('models.trait-country.structure', 'asymmetric'), ...S('models.trait-country.markovJumps', 'true')],
+  'discrete-from-label-no-bssvs': ['--discrete-trait', 'country=field:-1:_', ...S('models.trait-country.bssvs', 'false')],
+  'continuous-cauchy-latlong': ['--metadata', 'examples/data/YFV_metadata.tsv', '--continuous-trait', 'location=latitude,longitude', ...S('models.trait-location.latLong', 'true')],
+  'continuous-gamma': ['--metadata', 'examples/data/YFV_metadata.tsv', '--continuous-trait', 'location=latitude,longitude', ...S('models.trait-location.rates', 'gamma')],
+  'continuous-lognormal': ['--metadata', 'examples/data/YFV_metadata.tsv', '--continuous-trait', 'location=latitude,longitude', ...S('models.trait-location.rates', 'lognormal')],
+  'continuous-homogeneous-one-dimension': ['--metadata', 'examples/data/YFV_metadata.tsv', '--date-column', 'year', '--continuous-trait', 'latitude=latitude', ...S('models.trait-latitude.rates', 'homogeneous')],
+  'discrete-and-continuous-skygrid-ucln': ['--metadata', 'examples/data/YFV_metadata.tsv', '--discrete-trait', 'country=country', '--continuous-trait', 'location=latitude,longitude', ...M('treePrior', 'treePrior.skygrid'), ...M('clock', 'clock.uncorrelated')],
   'epochs-clock-and-birth-death-ucln': ['--codon', '12+3', '--clade', 'Trinidad=_Trinidad$', '--timeline', 'eras=ago:15,30', ...M('treePrior', 'treePrior.episodicBirthDeathSampling'), ...S('models.treePrior.timeline', 'eras'), ...M('clock', 'clock.uncorrelated')],
 };
 

@@ -36,6 +36,7 @@ export function usedInstanceIds(doc: AnalysisDocument): Set<string> {
     ids.add(p.clock);
     if (p.siteHeterogeneity !== null) ids.add(p.siteHeterogeneity);
   }
+  for (const trait of doc.traits ?? []) if (trait.model !== null) ids.add(trait.model);
   return ids;
 }
 

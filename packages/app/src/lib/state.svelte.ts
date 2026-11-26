@@ -5,8 +5,11 @@ import {
   detachAlignment,
   detectDateSpec,
   generate,
+  looksLikeTable,
+  parseTable,
   schemaRefs,
   type AlignmentData,
+  type MetadataTable,
   type AnalysisDocument,
   type GenerateResult,
   type Issue,
@@ -15,6 +18,7 @@ import {
   type SchemaRefs,
   type TaxonSet,
   type Timeline,
+  type Trait,
   type Slot,
 } from '@beautique/core';
 import { createRegistry, defaultTemplate } from '@beautique/modules';
@@ -26,6 +30,7 @@ export type StepId =
   | 'dates'
   | 'taxonSets'
   | 'timelines'
+  | 'traits'
   | 'partitions'
   | 'substitution'
   | 'clock'
@@ -40,6 +45,7 @@ export const STEPS: { id: StepId; label: string }[] = [
   { id: 'dates', label: 'Samples and dates' },
   { id: 'taxonSets', label: 'Taxon sets' },
   { id: 'timelines', label: 'Timelines' },
+  { id: 'traits', label: 'Traits' },
   { id: 'partitions', label: 'Partitions' },
   { id: 'substitution', label: 'Substitution' },
   { id: 'clock', label: 'Clock' },
@@ -57,6 +63,7 @@ const SLOT_STEP: Record<Slot, StepId> = {
   tree: 'tree',
   startingTree: 'tree',
   treePrior: 'tree',
+  trait: 'traits',
 };
 
 function download(content: string, fileName: string, type: string): void {
@@ -73,6 +80,8 @@ class AppState {
   doc = $state<AnalysisDocument>(defaultTemplate());
   /** Sequence data, held outside deep reactive state so large alignments stay cheap. */
   alignments = $state.raw<AlignmentData[]>([]);
+  /** Metadata tables, held outside deep reactive state like the sequence data. */
+  tables = $state.raw<MetadataTable[]>([]);
   step = $state<StepId>('data');
   importError = $state<string | null>(null);
 
@@ -80,6 +89,7 @@ class AppState {
   get document(): AnalysisDocument {
     const snapshot = $state.snapshot(this.doc) as AnalysisDocument;
     snapshot.data.alignments = this.alignments;
+    snapshot.data.tables = this.tables;
     return snapshot;
   }
 
@@ -93,6 +103,10 @@ class AppState {
 
   get timelines(): Timeline[] {
     return (this.doc.timelines ??= []);
+  }
+
+  get traits(): Trait[] {
+    return (this.doc.traits ??= []);
   }
 
   /** What reference fields can point to. */
@@ -122,17 +136,25 @@ class AppState {
     }
   }
 
-  /** Import FASTA or NEXUS alignments, or open a project or template (JSON). */
+  /** Import FASTA or NEXUS alignments or metadata tables (CSV, TSV), or open a project or template (JSON). */
   async importFiles(files: Iterable<File>): Promise<void> {
     this.importError = null;
+    // Copied first: a file input's list is emptied when the input is reset, before the files are read.
+    const list = [...files];
     try {
-      for (const file of files) {
+      for (const file of list) {
         const content = await file.text();
         if (/^\s*\{/.test(content)) {
           this.open(content);
           continue;
         }
         const name = file.name.replace(/\.[^.]+$/, '').replace(/\s+/g, '_');
+        if (/\.(csv|tsv|tab)$/i.test(file.name) || looksLikeTable(content)) {
+          let n = 1;
+          while (this.tables.some((t) => t.id === `table-${n}`)) n++;
+          this.tables = [...this.tables, parseTable(content, `table-${n}`, name)];
+          continue;
+        }
         const alignment = alignmentFromText(content, this.newAlignmentId(), name);
         if (this.alignments.length === 0 && this.doc.name === 'analysis') this.doc.name = name;
         attachAlignment(this.doc, alignment);
@@ -154,6 +176,15 @@ class AppState {
     }
   }
 
+  removeTable(id: string): void {
+    this.tables = this.tables.filter((t) => t.id !== id);
+    if (this.doc.data.dates.mode === 'column' && this.doc.data.dates.table === id) this.detectDates();
+  }
+
+  updateTable(id: string, patch: Partial<MetadataTable>): void {
+    this.tables = this.tables.map((t) => (t.id === id ? { ...t, ...patch } : t));
+  }
+
   updateAlignment(id: string, patch: Partial<AlignmentData>): void {
     this.alignments = this.alignments.map((a) => (a.id === id ? { ...a, ...patch } : a));
   }
@@ -167,11 +198,13 @@ class AppState {
     const parsed: unknown = JSON.parse(json);
     assertDocument(parsed);
     this.alignments = parsed.data.alignments;
+    this.tables = parsed.data.tables ?? [];
     this.doc = {
       ...parsed,
       taxonSets: parsed.taxonSets ?? [],
       timelines: parsed.timelines ?? [],
-      data: { ...parsed.data, alignments: [] },
+      traits: parsed.traits ?? [],
+      data: { ...parsed.data, alignments: [], tables: [] },
     };
     this.step = 'data';
   }
@@ -211,7 +244,7 @@ class AppState {
     if (path.startsWith('mcmc.') || path === 'name') return 'mcmc';
     if (path.startsWith('parameters.')) return 'priors';
     if (path.startsWith('operators.')) return 'operators';
-    if (path === 'taxonSets' || path === 'timelines') return path;
+    if (path === 'taxonSets' || path === 'timelines' || path === 'traits') return path;
     const m = /^models\.([^.]+)\./.exec(path);
     const instance = m && this.doc.components.find((c) => c.id === m[1]);
     if (instance) return SLOT_STEP[instance.slot];
@@ -223,6 +256,7 @@ class AppState {
   reset(): void {
     this.doc = defaultTemplate();
     this.alignments = [];
+    this.tables = [];
     this.step = 'data';
     this.importError = null;
   }

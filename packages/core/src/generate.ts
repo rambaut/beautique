@@ -14,9 +14,9 @@ import {
   type Partition,
 } from './document';
 import {
+  LATE_SECTIONS,
   MODULE_API_VERSION,
   TOP_LEVEL_SECTIONS,
-  type Contributions,
   type DataSummary,
   type FactValue,
   type Issue,
@@ -33,9 +33,10 @@ import type { ModuleRegistry } from './registry';
 import { resolveOptions, validateOptions, type OptionValues } from './schema';
 import { nameProblem, nestTaxonSets, type TaxonSetInfo } from './taxonsets';
 import { resolveTimeline, type TimelineResolution } from './timeline';
-import { comment, el, formatNumbers, ref, serialize, type XmlElement, type XmlNode } from './xml';
+import { resolveTrait, type ResolvedTrait } from './traits';
+import { comment, el, formatNumbers, nodes, ref, serialize, type XmlElement, type XmlNode } from './xml';
 
-export const BEAUTIQUE_VERSION = '0.3.0';
+export const BEAUTIQUE_VERSION = '0.4.0';
 /** The BEAST X version written to the `<beast version>` attribute. */
 export const BEAST_XML_VERSION = '10.6.0';
 
@@ -90,7 +91,7 @@ interface Entry {
   ctx?: ModuleContext;
   params: ResolvedParameter[];
   operators: ResolvedOperator[];
-  contributions: Contributions;
+  contributions: Partial<Record<Section, XmlNode[]>>;
 }
 
 interface SiteModel {
@@ -116,6 +117,7 @@ const ENTRY_ORDER: Entry['slot'][] = [
   'taxonSets',
   'startingTree',
   'treePrior',
+  'trait',
 ];
 
 function safeId(name: string): string {
@@ -135,6 +137,19 @@ function patternsElement(id: string | undefined, range: SiteRange, alignment: st
 }
 
 export function generate(doc: AnalysisDocument, registry: ModuleRegistry, options: GenerateOptions = {}): GenerateResult {
+  const result = assemble(doc, registry, options);
+  // The same problem can be found from two sides (two things with one name); report it once.
+  const seen = new Set<string>();
+  result.issues = result.issues.filter((issue) => {
+    const key = `${issue.severity}|${issue.path ?? ''}|${issue.message}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return result;
+}
+
+function assemble(doc: AnalysisDocument, registry: ModuleRegistry, options: GenerateOptions): GenerateResult {
   const issues: Issue[] = [];
   const error = (message: string, path?: string): void => {
     issues.push({ severity: 'error', message, path });
@@ -195,6 +210,26 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
     monophyletic: set.monophyletic === true,
     parent: nesting.parent.get(set.id) ?? null,
   }));
+
+  // ---- traits ---------------------------------------------------------------
+  const traits = doc.traits ?? [];
+  const resolvedTraits = new Map<string, ResolvedTrait>();
+  for (const trait of traits) {
+    const others = [...traits.filter((t) => t !== trait).map((t) => t.name), ...taxonSets.map((s) => s.name)];
+    const problem = nameProblem(trait.name, others);
+    if (problem) error(`Trait "${trait.name}" ${problem}`, 'traits');
+    if (!hasData) continue;
+    const resolved = resolveTrait(trait, doc.data, taxa);
+    resolvedTraits.set(trait.id, resolved);
+    for (const text of resolved.problems) error(`Trait "${trait.name}" ${text}`, 'traits');
+    if (resolved.problems.length === 0 && resolved.missing > 0) {
+      issues.push({
+        severity: 'warning',
+        message: `Trait "${trait.name}" has no value for ${resolved.missing} of ${taxa.length} taxa; they are treated as unknown`,
+        path: 'traits',
+      });
+    }
+  }
 
   const timelineCache = new Map<string, TimelineResolution>();
   const timelineOf = (id: unknown): TimelineResolution => {
@@ -272,6 +307,11 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
   want(doc.tree.tree, 'tree');
   want(doc.tree.startingTree, 'startingTree');
   want(doc.tree.treePrior, 'treePrior');
+  for (const trait of traits) {
+    if (trait.model === null) error(`Trait "${trait.name}" has no model`, 'traits');
+    else if (wanted.some((w) => w.id === trait.model)) error(`Trait "${trait.name}" shares its model with something else`, 'traits');
+    else want(trait.model, 'trait');
+  }
 
   const published = new Map<string, { owner: string; element: XmlElement }[]>();
   const lookup = (name: string, owner?: string): XmlElement => {
@@ -339,6 +379,11 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
 
   const entries: Entry[] = [];
   for (const { id, slot } of wanted) {
+    // A trait that could not be read has been reported; its model has nothing to work on.
+    if (slot === 'trait' && hasData) {
+      const owner = traits.find((t) => t.model === id);
+      if (owner && (resolvedTraits.get(owner.id)?.problems.length ?? 1) > 0) continue;
+    }
     const instance = findInstance(doc, id);
     if (!instance) {
       error(`The analysis refers to a model "${id}" that is not defined`);
@@ -353,9 +398,16 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
       error(`"${module.label}" cannot be used as a ${slot} model`);
       continue;
     }
+    // A trait model's ids always start with the name of its trait.
+    const trait = slot === 'trait' ? traits.find((t) => t.model === id) : undefined;
+    const traitInfo = trait && resolvedTraits.get(trait.id);
+    if (trait && module.traitType !== undefined && module.traitType !== trait.type) {
+      error(`"${module.label}" cannot be used for the ${trait.type} trait "${trait.name}"`, 'traits');
+      continue;
+    }
     const inSlot = wanted.filter((w) => w.slot === slot).length;
-    const prefix = inSlot > 1 ? `${safeId(instance.name)}.` : '';
-    const label = inSlot > 1 ? `${module.label} (${instance.name})` : module.label;
+    const prefix = trait ? `${trait.name}.` : inSlot > 1 ? `${safeId(instance.name)}.` : '';
+    const label = trait ? `${module.label} (${trait.name})` : inSlot > 1 ? `${module.label} (${instance.name})` : module.label;
     const resolved = resolveOptions(module.options ?? {}, instance.options);
     for (const issue of validateOptions(module.options ?? {}, resolved, refs)) {
       error(`${label}: ${issue.message}`, `models.${instance.id}.${issue.field}`);
@@ -373,6 +425,7 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
       instanceName: instance.name,
       prefix,
       data,
+      trait: traitInfo,
       taxonSets: taxonSetInfo,
       taxonSet: (setId) => {
         const set = taxonSetInfo.find((s) => s.id === setId);
@@ -438,7 +491,8 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
   }
   for (const entry of entries) {
     issues.push(...run(entry, 'validation', (m, ctx) => m.validate?.(ctx) ?? [], []));
-    entry.contributions = run(entry, 'XML', (m, ctx) => m.generate(ctx), {});
+    const generated = run(entry, 'XML', (m, ctx) => m.generate(ctx), {});
+    for (const [name, children] of Object.entries(generated)) entry.contributions[name as Section] = nodes(children);
     resolveOperators(entry, run(entry, 'operators', (m, ctx) => m.operators?.(ctx) ?? [], []));
   }
 
@@ -447,7 +501,7 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
   if (taxonSetInfo.some((s) => s.size > 0)) {
     try {
       const tree = lookup('treeModel');
-      const contributions: Required<Pick<Contributions, 'treeStatistics' | 'prior' | 'fileLog'>> = {
+      const contributions: Record<'treeStatistics' | 'prior' | 'fileLog', XmlNode[]> = {
         treeStatistics: [],
         prior: [],
         fileLog: [],
@@ -585,6 +639,7 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
   try {
     const treeModel = (): XmlElement => lookup('treeModel');
 
+    const writtenTraits = traits.flatMap((t) => resolvedTraits.get(t.id) ?? []);
     top.push(
       comment(`The list of taxa to be analysed. ntax=${taxa.length}`),
       el(
@@ -594,7 +649,14 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
           el(
             'taxon',
             { id: t.id },
-            t.date === undefined ? [] : [el('date', { value: t.date, direction: 'forwards', units: 'years' })],
+            [
+              t.date === undefined ? [] : el('date', { value: t.date, direction: 'forwards', units: 'years' }),
+              writtenTraits.map((trait) => el('attr', { name: trait.name }, [
+                  trait.values.get(t.key) ??
+                    (trait.type === 'continuous' ? new Array(trait.dimension).fill('NA').join(' ') : '?'),
+                ]),
+              ),
+            ],
           ),
         ),
       ),
@@ -672,6 +734,8 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
       );
       likelihoods.push(ref('treeDataLikelihood', id));
     }
+
+    for (const name of LATE_SECTIONS) top.push(...section(name));
 
     top.push(
       comment('Define operators'),
