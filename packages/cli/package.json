@@ -1,0 +1,9 @@
+{
+  "name": "@beautique/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "beautique": "./dist/beautique.js" },
+  "scripts": { "build": "vite build" },
+  "dependencies": { "@beautique/core": "*", "@beautique/modules": "*" }
+}

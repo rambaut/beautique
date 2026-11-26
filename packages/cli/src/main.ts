@@ -1,0 +1,196 @@
+import { readFile, writeFile } from 'node:fs/promises';
+import { basename, extname, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { parseArgs } from 'node:util';
+import {
+  alignmentFromFasta,
+  assertDocument,
+  bindData,
+  generate,
+  listSettings,
+  setSetting,
+  SLOT_LABELS,
+  BEAUTIQUE_VERSION,
+  type AnalysisDocument,
+  type ModuleDefinition,
+  type ModuleRegistry,
+} from '@beautique/core';
+import { createRegistry, defaultTemplate } from '@beautique/modules';
+
+const USAGE = `BEAUtique v${BEAUTIQUE_VERSION}: generate BEAST X analysis files
+
+Usage:
+  beautique generate --fasta <file> [options]   Write a BEAST XML file
+  beautique describe [template.json]            List a template's settings
+  beautique modules                             List the available modules
+
+Options for generate:
+  -t, --template <file>     Template or project (JSON). Default: the built-in template
+  -f, --fasta <file>        Aligned sequences; repeat for several partitions
+  -o, --output <file>       Output file. Default: <name>.xml
+  -n, --name <name>         Analysis name (stem of BEAST's output files)
+  -s, --set <path=value>    Set a setting; repeatable (see "describe" for paths)
+      --date-field <n>      Field of the taxon label holding the date (1 = first, -1 = last)
+      --date-delimiter <c>  Delimiter that separates label fields for dates
+      --no-dates            Do not read dates from taxon labels
+  -m, --module <file>       Load an extra module (JavaScript ES module); repeatable
+`;
+
+class UsageError extends Error {}
+
+async function loadRegistry(paths: string[]): Promise<ModuleRegistry> {
+  const extra: ModuleDefinition[] = [];
+  for (const path of paths) {
+    const loaded = await import(pathToFileURL(resolve(path)).href);
+    extra.push(loaded.default as ModuleDefinition);
+  }
+  return createRegistry(extra);
+}
+
+async function loadDocument(path: string | undefined): Promise<AnalysisDocument> {
+  if (!path) return defaultTemplate();
+  const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
+  assertDocument(parsed);
+  return parsed;
+}
+
+function describe(doc: AnalysisDocument, registry: ModuleRegistry): string {
+  const lines: string[] = [];
+  if (doc.template?.description) lines.push(doc.template.description, '');
+  let group = '';
+  for (const setting of listSettings(doc, registry)) {
+    if (setting.group !== group) {
+      group = setting.group;
+      lines.push(`${group}`);
+    }
+    const flags = [setting.ask ? 'ask' : null, setting.explicit ? null : 'default'].filter(Boolean).join(', ');
+    const choices = setting.field.type === 'choice' ? ` [${setting.field.choices.map((c) => c.value).join('|')}]` : '';
+    lines.push(
+      `  ${setting.path} = ${String(setting.value)}${flags ? ` (${flags})` : ''}`,
+      `      ${setting.field.label}${choices}`,
+    );
+  }
+  return lines.join('\n');
+}
+
+async function main(argv: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      template: { type: 'string', short: 't' },
+      fasta: { type: 'string', short: 'f', multiple: true },
+      output: { type: 'string', short: 'o' },
+      name: { type: 'string', short: 'n' },
+      set: { type: 'string', short: 's', multiple: true },
+      'date-field': { type: 'string' },
+      'date-delimiter': { type: 'string' },
+      'no-dates': { type: 'boolean' },
+      module: { type: 'string', short: 'm', multiple: true },
+      help: { type: 'boolean', short: 'h' },
+      version: { type: 'boolean', short: 'v' },
+    },
+  });
+
+  const command = positionals[0];
+  if (values.version) {
+    console.log(BEAUTIQUE_VERSION);
+    return 0;
+  }
+  if (values.help || !command) {
+    console.log(USAGE);
+    return command || values.help ? 0 : 1;
+  }
+
+  const registry = await loadRegistry(values.module ?? []);
+
+  if (command === 'modules') {
+    for (const module of registry.all()) {
+      console.log(`${module.id.padEnd(28)} ${SLOT_LABELS[module.slot]}: ${module.label}`);
+    }
+    return 0;
+  }
+
+  if (command === 'describe') {
+    console.log(describe(await loadDocument(positionals[1] ?? values.template), registry));
+    return 0;
+  }
+
+  if (command !== 'generate') throw new UsageError(`Unknown command "${command}"`);
+
+  const fastaPaths = values.fasta ?? [];
+  let doc = await loadDocument(values.template);
+  if (fastaPaths.length > 0) {
+    const alignments = [];
+    for (const [i, path] of fastaPaths.entries()) {
+      const name = basename(path, extname(path));
+      alignments.push(alignmentFromFasta(await readFile(path, 'utf8'), `alignment-${i + 1}`, name));
+    }
+    if (doc.data.alignments.length > 0) {
+      throw new UsageError('The project already contains sequence data; --fasta can only be used with a template');
+    }
+    if (doc.name === 'analysis' && !values.name) doc.name = alignments[0].name;
+    doc = bindData(doc, alignments);
+  } else if (doc.data.alignments.length === 0) {
+    throw new UsageError('No sequence data: give at least one --fasta file');
+  }
+
+  if (values['no-dates']) {
+    doc.data.dates = { ...doc.data.dates, mode: 'none' };
+  } else if (values['date-field'] !== undefined) {
+    const n = Number(values['date-field']);
+    if (!Number.isInteger(n) || n === 0) throw new UsageError('--date-field must be a non-zero whole number');
+    doc.data.dates = {
+      mode: 'labelField',
+      delimiter: values['date-delimiter'] ?? (doc.data.dates.mode === 'none' ? '|' : doc.data.dates.delimiter),
+      field: n > 0 ? n - 1 : n,
+    };
+  } else if (values['date-delimiter'] !== undefined) {
+    throw new UsageError('--date-delimiter needs --date-field');
+  }
+
+  if (values.name) setSetting(doc, registry, 'name', values.name);
+  const given = new Set<string>(values.name ? ['name'] : []);
+  for (const assignment of values.set ?? []) {
+    const eq = assignment.indexOf('=');
+    if (eq < 1) throw new UsageError(`--set expects path=value, got "${assignment}"`);
+    setSetting(doc, registry, assignment.slice(0, eq), assignment.slice(eq + 1));
+    given.add(assignment.slice(0, eq));
+  }
+
+  const unanswered = (values.template ? (doc.template?.ask ?? []) : []).filter((path) => !given.has(path));
+  if (unanswered.length > 0) {
+    console.error(`Note: using the template's values for: ${unanswered.join(', ')}`);
+  }
+
+  const result = generate(doc, registry);
+  for (const issue of result.issues) {
+    console.error(`${issue.severity === 'error' ? 'Error' : 'Warning'}: ${issue.message}`);
+  }
+  if (result.xml === undefined) return 1;
+
+  const output = values.output ?? `${doc.name}.xml`;
+  await writeFile(output, result.xml);
+  const dated = result.taxa.filter((t) => t.date !== undefined);
+  const dates = dated.map((t) => t.date as number);
+  console.error(
+    `Wrote ${output}: ${result.taxa.length} taxa, ` +
+      (dated.length > 0
+        ? `tip dates ${Math.min(...dates).toFixed(2)} to ${Math.max(...dates).toFixed(2)}`
+        : 'no tip dates'),
+  );
+  return 0;
+}
+
+main(process.argv.slice(2)).then(
+  (code) => {
+    process.exitCode = code;
+  },
+  (e: unknown) => {
+    console.error(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    if (e instanceof UsageError || (e as { code?: string })?.code?.startsWith('ERR_PARSE_ARGS')) {
+      console.error('Run "beautique --help" for usage.');
+    }
+    process.exitCode = 1;
+  },
+);

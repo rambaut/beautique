@@ -1,0 +1,184 @@
+/**
+ * The module API. A module is a plain object (see `defineModule`) that
+ * describes one model or feature: its options, the parameters it introduces
+ * with their default priors, the operators on them, and the XML it contributes.
+ *
+ * A module receives everything it needs through its context, so a module built
+ * outside this repository needs no imports and can be loaded at runtime.
+ */
+
+import type { OptionsSchema, OptionValues } from './schema';
+import type { AttrValue, XmlChild, XmlComment, XmlElement, XmlNode } from './xml';
+
+export const MODULE_API_VERSION = 1;
+
+/** Where a module plugs in. Each slot has a scope: partition, tree or global. */
+export const SLOTS = [
+  'substitution',
+  'siteHeterogeneity',
+  'clock',
+  'tree',
+  'startingTree',
+  'treePrior',
+] as const;
+export type Slot = (typeof SLOTS)[number];
+
+export const SLOT_LABELS: Record<Slot, string> = {
+  substitution: 'Substitution model',
+  siteHeterogeneity: 'Among-site rate heterogeneity',
+  clock: 'Molecular clock',
+  tree: 'Tree',
+  startingTree: 'Starting tree',
+  treePrior: 'Tree prior',
+};
+
+/**
+ * Named places in the XML that modules contribute to. The first group are
+ * top-level blocks, listed in output order; the second group are nested inside
+ * blocks that the pipeline builds.
+ */
+export const TOP_LEVEL_SECTIONS = [
+  'treePriorModel',
+  'startingTree',
+  'treeModel',
+  'treeStatistics',
+  'treePrior',
+  'clock',
+  'substitutionModel',
+] as const;
+
+export const NESTED_SECTIONS = [
+  /** Children of the `<siteModel>` this module belongs to (site heterogeneity modules). */
+  'siteModel',
+  /** Extra entries in `<prior>`, after the parameter priors (e.g. a coalescent likelihood). */
+  'prior',
+  /** Extra entries in `<likelihood>`. */
+  'likelihood',
+  /** `<column>` elements for the screen log. */
+  'screenLog',
+  /** Entries in the file log, written after this module's parameters. */
+  'fileLog',
+  /** Likelihood entries written at the end of the file log. */
+  'fileLogLikelihoods',
+  /** Entries in the tree log. */
+  'treeLog',
+] as const;
+
+export type Section = (typeof TOP_LEVEL_SECTIONS)[number] | (typeof NESTED_SECTIONS)[number];
+export type Contributions = Partial<Record<Section, XmlNode[]>>;
+
+export type PriorSpec =
+  | { type: 'logNormal'; mu: number; sigma: number; offset?: number }
+  | { type: 'normal'; mean: number; stdev: number }
+  | { type: 'gamma'; shape: number; scale: number; offset?: number }
+  | { type: 'exponential'; mean: number; offset?: number }
+  | { type: 'uniform'; lower: number; upper: number }
+  | { type: 'dirichlet'; alpha: number; sumsTo: number }
+  /** The CTMC rate reference prior (Ferreira & Suchard 2008), conditioned on the tree. */
+  | { type: 'ctmcScale' }
+  | { type: 'oneOnX' };
+
+export interface ParameterDecl {
+  /** Local name; the pipeline adds the instance prefix to form the XML id. */
+  name: string;
+  description?: string;
+  /** Initial value. Omit for parameters whose values come from elsewhere (e.g. node heights). */
+  value?: number | number[];
+  dimension?: number;
+  lower?: number;
+  upper?: number;
+  /** Default prior. Omit for parameters that have none (fixed values, tree heights). */
+  prior?: PriorSpec;
+  /** Write to the file log (default true). */
+  log?: boolean;
+  /** Show as a column in the screen log (default false). */
+  screen?: boolean;
+}
+
+export interface OperatorDecl {
+  /** Local key, unique within the module; used for user overrides of weight and tuning. */
+  key: string;
+  label?: string;
+  /** XML element name of the operator. */
+  element: string;
+  weight: number;
+  /** The auto-optimised tuning attribute, if the operator has one. */
+  tuning?: { name: string; value: number };
+  attrs?: Record<string, AttrValue>;
+  children: XmlNode[];
+}
+
+export interface Issue {
+  severity: 'error' | 'warning';
+  message: string;
+  /** Setting path the issue relates to, when there is one. */
+  path?: string;
+}
+
+export interface DataSummary {
+  /** Number of taxa. */
+  ntax: number;
+  /** True when every tip has a sampling date. */
+  hasDates: boolean;
+  /** Range of tip dates in decimal years, when dated. */
+  dateRange?: { min: number; max: number };
+}
+
+export interface ModuleContext {
+  apiVersion: number;
+  /** This module's options with defaults filled in. */
+  options: OptionValues;
+  /** Display name of this instance. */
+  instanceName: string;
+  /** Id prefix for this instance: empty when it is the only one in its slot. */
+  prefix: string;
+  data: DataSummary;
+  operatorStrategy: 'standard' | 'hmc';
+  /** Prefix a local name to form an XML id. */
+  id(local: string): string;
+  /** The defining `<parameter id=...>` element of a declared parameter. Use once. */
+  param(name: string): XmlElement;
+  /** A `<parameter idref=...>` reference to a declared parameter. */
+  paramRef(name: string): XmlElement;
+  /**
+   * A reference element published by another module (see `ModuleDefinition.refs`),
+   * e.g. `ctx.ref('treeModel')`. Throws if no module in use provides it.
+   */
+  ref(name: string): XmlElement;
+  /** XML builders, so runtime-loaded modules need no imports. */
+  xml: {
+    el(name: string, attrs?: Record<string, AttrValue>, children?: XmlChild[]): XmlElement;
+    ref(name: string, id: string): XmlElement;
+    comment(text: string): XmlComment;
+  };
+}
+
+export interface ModuleDefinition {
+  apiVersion: number;
+  /** Unique id, conventionally `<slot>.<name>`. */
+  id: string;
+  slot: Slot;
+  label: string;
+  description?: string;
+  citation?: string;
+  /** Earliest BEAST X version that can run this module's XML. */
+  minBeast?: string;
+  /** True when the module provides gradient-based operators for the `hmc` strategy. */
+  supportsHmc?: boolean;
+  options?: OptionsSchema;
+  parameters?(ctx: ModuleContext): ParameterDecl[];
+  operators?(ctx: ModuleContext): OperatorDecl[];
+  /**
+   * Reference elements other modules may need, by well-known name. Names in use:
+   * `treeModel`, `allInternalNodeHeights`, `startingTree`, `branchRates`, `substitutionModel`.
+   */
+  refs?(ctx: ModuleContext): Record<string, XmlElement>;
+  generate(ctx: ModuleContext): Contributions;
+  /** Checks beyond what the options schema expresses. */
+  validate?(ctx: ModuleContext): Issue[];
+}
+
+/** Identity helper that gives module authors type checking and completion. */
+export function defineModule(definition: ModuleDefinition): ModuleDefinition {
+  return definition;
+}

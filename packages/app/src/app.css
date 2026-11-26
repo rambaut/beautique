@@ -1,0 +1,400 @@
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --border: #d9dde3;
+  --text: #1c2330;
+  --muted: #5d6878;
+  --accent: #1f6feb;
+  --accent-text: #ffffff;
+  --accent-soft: #e7f0ff;
+  --error: #b42318;
+  --error-soft: #fdecea;
+  --warning: #8a5a00;
+  --ok: #18794e;
+  --code-bg: #f0f2f5;
+  --radius: 8px;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12161c;
+    --surface: #1b212a;
+    --border: #2f3846;
+    --text: #e6eaf0;
+    --muted: #9aa5b5;
+    --accent: #5b9dff;
+    --accent-text: #0b1220;
+    --accent-soft: #1d2b44;
+    --error: #ff8a80;
+    --error-soft: #3a1f1d;
+    --warning: #f0b65a;
+    --ok: #5fd39a;
+    --code-bg: #151a21;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.shell {
+  display: grid;
+  grid-template: 'header header' auto 'nav main' 1fr / 13rem minmax(0, 1fr);
+  height: 100vh;
+}
+
+.shell.with-preview {
+  grid-template: 'header header header' auto 'nav main aside' 1fr / 13rem minmax(0, 1fr) minmax(0, 1fr);
+}
+
+header {
+  grid-area: header;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 1rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.wordmark {
+  font-weight: 700;
+  font-size: 1.15rem;
+  letter-spacing: 0.01em;
+}
+
+.doc-name {
+  color: var(--muted);
+}
+
+.spacer {
+  flex: 1;
+}
+
+nav {
+  grid-area: nav;
+  padding: 0.75rem 0.5rem;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  overflow-y: auto;
+}
+
+nav ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+nav button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 0.5rem 0.7rem;
+  border: none;
+  background: none;
+  text-align: left;
+}
+
+nav button:hover {
+  background: var(--code-bg);
+}
+
+nav button.current {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.badge {
+  min-width: 1.4rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--error);
+  color: var(--surface);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.badge.ok {
+  background: var(--ok);
+}
+
+main {
+  grid-area: main;
+  padding: 1.25rem 1.5rem 3rem;
+  overflow-y: auto;
+}
+
+aside {
+  grid-area: aside;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+
+aside h2 {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+aside pre {
+  flex: 1;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  overflow: auto;
+  background: var(--code-bg);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  tab-size: 2;
+}
+
+aside .issues {
+  padding: 1rem 1rem 1rem 2rem;
+}
+
+h1 {
+  margin: 0 0 1rem;
+  font-size: 1.4rem;
+}
+
+h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+
+p {
+  margin: 0 0 0.75rem;
+}
+
+.card {
+  max-width: 52rem;
+  margin-bottom: 1rem;
+  padding: 1rem 1.1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.card > :last-child {
+  margin-bottom: 0;
+}
+
+.field {
+  margin-bottom: 0.9rem;
+}
+
+.field > label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.field label.check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+
+.control {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.units,
+.help {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 400;
+}
+
+p.help,
+p.message {
+  margin: 0.25rem 0 0;
+}
+
+.cite {
+  font-style: italic;
+}
+
+.message {
+  color: var(--error);
+  font-size: 0.85rem;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+}
+
+button.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  text-align: left;
+}
+
+button.link:hover {
+  text-decoration: underline;
+}
+
+input[type='text'],
+input[type='number'],
+select {
+  min-width: 14rem;
+  max-width: 100%;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+input.short {
+  min-width: 0;
+  width: 4.5rem;
+}
+
+td select {
+  min-width: 0;
+}
+
+.invalid input,
+input[aria-invalid='true'] {
+  border-color: var(--error);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 1.5rem 1rem;
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  text-align: center;
+  cursor: pointer;
+}
+
+.dropzone.dragging,
+.dropzone:hover,
+.dropzone:focus-within {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dropzone input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+table {
+  width: 100%;
+  margin-top: 0.75rem;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+th,
+td {
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  overflow-wrap: break-word;
+}
+
+.issues {
+  margin: 0 0 0.75rem;
+  padding-left: 1.2rem;
+}
+
+.issues .error,
+.issues .error button {
+  color: var(--error);
+}
+
+.issues .warning {
+  color: var(--warning);
+}
+
+@media (max-width: 60rem) {
+  .shell.with-preview {
+    grid-template: 'header header' auto 'nav main' 1fr / 13rem minmax(0, 1fr);
+  }
+
+  aside {
+    display: none;
+  }
+}

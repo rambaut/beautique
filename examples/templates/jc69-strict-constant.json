@@ -1,0 +1,82 @@
+{
+  "format": "beautique",
+  "formatVersion": 1,
+  "kind": "template",
+  "name": "analysis",
+  "data": {
+    "alignments": [],
+    "dates": {
+      "mode": "auto",
+      "delimiter": "|",
+      "field": -1
+    },
+    "taxonIdStyle": "label"
+  },
+  "partitions": [
+    {
+      "id": "partition",
+      "name": "partition",
+      "alignment": null,
+      "substitution": "substitution",
+      "siteHeterogeneity": null,
+      "clock": "clock"
+    }
+  ],
+  "tree": {
+    "tree": "tree",
+    "startingTree": "startingTree",
+    "treePrior": "treePrior"
+  },
+  "components": [
+    {
+      "id": "substitution",
+      "slot": "substitution",
+      "module": "substitution.jc69",
+      "name": "substitution",
+      "options": {}
+    },
+    {
+      "id": "clock",
+      "slot": "clock",
+      "module": "clock.strict",
+      "name": "clock",
+      "options": {
+        "rateMode": "estimate"
+      }
+    },
+    {
+      "id": "tree",
+      "slot": "tree",
+      "module": "tree.timeTree",
+      "name": "tree",
+      "options": {}
+    },
+    {
+      "id": "startingTree",
+      "slot": "startingTree",
+      "module": "startingTree.random",
+      "name": "startingTree",
+      "options": {}
+    },
+    {
+      "id": "treePrior",
+      "slot": "treePrior",
+      "module": "treePrior.constant",
+      "name": "treePrior",
+      "options": {}
+    }
+  ],
+  "parameters": {},
+  "operators": {},
+  "mcmc": {
+    "chainLength": 1000000,
+    "logEvery": 1000
+  },
+  "template": {
+    "description": "JC69 (from a drop-in module), strict clock with an estimated rate, constant-size coalescent.",
+    "ask": [
+      "name",
+      "mcmc.chainLength"
+    ]
+  }
+}
