@@ -103,6 +103,23 @@ export function describePrior(prior: PriorSpec): string {
   return shown.length > 0 ? `${info.label}(${shown.join(', ')})` : info.label;
 }
 
+const PRIOR_ELEMENTS: Record<PriorType, string> = {
+  logNormal: 'logNormalPrior',
+  normal: 'normalPrior',
+  gamma: 'gammaPrior',
+  exponential: 'exponentialPrior',
+  laplace: 'laplacePrior',
+  uniform: 'uniformPrior',
+  dirichlet: 'dirichletPrior',
+  ctmcScale: 'ctmcScalePrior',
+  oneOnX: 'oneOnXPrior',
+};
+
+/** The name of the XML element that `priorElement` writes for a prior. */
+export function priorElementName(prior: PriorSpec): string {
+  return PRIOR_ELEMENTS[prior.type];
+}
+
 /** The prior's XML element around a reference to its parameter. */
 export function priorElement(prior: PriorSpec, parameter: XmlElement, treeModel: () => XmlElement): XmlElement {
   const value = (name: string): number => priorParam(prior, name);

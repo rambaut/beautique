@@ -60,6 +60,7 @@ describe('built-in modules', () => {
     expect(builtinModules.map((m) => m.id)).toEqual([
       'clock.epoch',
       'clock.localClade',
+      'clock.shrinkage',
       'clock.strict',
       'clock.uncorrelated',
       'siteHeterogeneity.gamma',

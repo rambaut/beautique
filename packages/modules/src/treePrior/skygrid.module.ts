@@ -1,10 +1,61 @@
-import { defineModule, type ModuleContext } from '@beautique/core';
+import { defineModule, type ModuleContext, type OperatorDecl } from '@beautique/core';
+import { hmcOperator, useHmc } from '../hmc';
 
 /** The cut-off: as set, or 1.5 times the span of the sampling dates. */
 function cutOff(ctx: ModuleContext): number | undefined {
   if (typeof ctx.options.cutOff === 'number') return ctx.options.cutOff;
   const range = ctx.data.dateRange;
   return range && range.max > range.min ? 1.5 * (range.max - range.min) : undefined;
+}
+
+/** The standard operators: a block update of the population sizes and precision, and a scale move on the precision. */
+function blockUpdateOperators(ctx: ModuleContext): OperatorDecl[] {
+  return [
+    {
+      key: 'skygrid.gridBlockUpdate',
+      label: 'gmrfGridBlockUpdate(skygrid.logPopSize, skygrid.precision)',
+      element: 'gmrfGridBlockUpdateOperator',
+      weight: 2,
+      children: [ctx.xml.ref('gmrfSkyrideLikelihood', 'skygrid')],
+    },
+    {
+      key: 'skygrid.precision.scale',
+      element: 'scaleOperator',
+      tuning: { name: 'scaleFactor', value: 0.75 },
+      weight: 1,
+      children: [ctx.paramRef('skygrid.precision')],
+    },
+  ];
+}
+
+/** One Hamiltonian Monte Carlo operator on the population sizes and the precision together. */
+function hmcOperators(ctx: ModuleContext): OperatorDecl[] {
+  const { el, ref } = ctx.xml;
+  const skygrid = ref('gmrfSkyGridLikelihood', 'skygrid');
+  return [
+    hmcOperator({
+      key: 'skygrid.hmc',
+      label: 'HMC(skygrid.logPopSize, skygrid.precision)',
+      weight: 2,
+      nSteps: 50,
+      attrs: { gradientCheckTolerance: 0.1, preconditioning: 'none', preconditioningUpdateFrequency: 100 },
+      children: [
+        el('compoundGradient', { id: 'full.skygrid.gradient' }, [
+          el('jointGradient', { id: 'joint.skygrid.precision' }, [
+            el('gmrfSkyrideGradient', { id: 'gmrfGradientPrec', wrtParameter: 'precision' }, [skygrid]),
+            el('gradient', {}, [ctx.priorRef('skygrid.precision'), ctx.paramRef('skygrid.precision')]),
+          ]),
+          el('gmrfSkyrideGradient', { id: 'gmrfGradientPop', wrtParameter: 'logPopulationSizes' }, [skygrid]),
+        ]),
+        el('compoundParameter', { id: 'skygrid.parameters' }, [
+          ctx.paramRef('skygrid.precision'),
+          ctx.paramRef('skygrid.logPopSize'),
+        ]),
+        // the precision, the first of the parameters, must stay positive
+        el('signTransform', { start: 1, end: 1 }, [ref('compoundParameter', 'skygrid.parameters')]),
+      ],
+    }),
+  ];
 }
 
 export default defineModule({
@@ -14,7 +65,9 @@ export default defineModule({
   label: 'Coalescent: Bayesian skygrid',
   description:
     'A non-parametric coalescent prior: the effective population size changes at fixed grid points in time, smoothed by a Gaussian Markov random field.',
-  citation: 'Gill, Lemey, Faria, Rambaut, Shapiro & Suchard (2013) Mol Biol Evol 30:713-724',
+  citation:
+    'Gill, Lemey, Faria, Rambaut, Shapiro & Suchard (2013) Mol Biol Evol 30:713-724; with HMC: Baele, Gill, Lemey & Suchard (2020) Wellcome Open Res 5:53',
+  supportsHmc: true,
   options: {
     gridPoints: {
       type: 'integer',
@@ -60,22 +113,7 @@ export default defineModule({
     },
     { name: 'skygrid.cutOff', value: cutOff(ctx) ?? 1 },
   ],
-  operators: (ctx) => [
-    {
-      key: 'skygrid.gridBlockUpdate',
-      label: 'gmrfGridBlockUpdate(skygrid.logPopSize, skygrid.precision)',
-      element: 'gmrfGridBlockUpdateOperator',
-      weight: 2,
-      children: [ctx.xml.ref('gmrfSkyrideLikelihood', 'skygrid')],
-    },
-    {
-      key: 'skygrid.precision.scale',
-      element: 'scaleOperator',
-      tuning: { name: 'scaleFactor', value: 0.75 },
-      weight: 1,
-      children: [ctx.paramRef('skygrid.precision')],
-    },
-  ],
+  operators: (ctx) => (useHmc(ctx) ? hmcOperators(ctx) : blockUpdateOperators(ctx)),
   generate: (ctx) => {
     const { el, ref, comment } = ctx.xml;
     const likelihood = ref('gmrfSkyGridLikelihood', 'skygrid');

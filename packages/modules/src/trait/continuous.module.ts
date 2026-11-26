@@ -1,4 +1,5 @@
 import { defineModule, type ModuleContext, type TraitInfo } from '@beautique/core';
+import { hmcOperator, useHmc } from '../hmc';
 
 const traitOf = (ctx: ModuleContext): TraitInfo => {
   if (!ctx.trait) throw new Error('this model needs a trait');
@@ -6,6 +7,8 @@ const traitOf = (ctx: ModuleContext): TraitInfo => {
 };
 type Rates = 'homogeneous' | 'cauchy' | 'gamma' | 'lognormal';
 const ratesOf = (ctx: ModuleContext): Rates => ctx.options.rates as Rates;
+/** The lognormal relaxed random walk can have its branch rates moved by Hamiltonian Monte Carlo. */
+const hmcRates = (ctx: ModuleContext): boolean => useHmc(ctx) && ratesOf(ctx) === 'lognormal';
 
 export default defineModule({
   apiVersion: 1,
@@ -16,6 +19,7 @@ export default defineModule({
   description:
     'The trait changes along the branches of the tree as a random walk (Brownian diffusion), with a rate of diffusion that can differ between branches. For coordinates, this is continuous phylogeography.',
   citation: 'Lemey, Rambaut, Welch & Suchard (2010) Mol Biol Evol 27:1877-1885',
+  supportsHmc: true,
   options: {
     rates: {
       type: 'choice',
@@ -94,7 +98,31 @@ export default defineModule({
       children: [ctx.paramRef(name)],
     });
     return [
-      ...(rates === 'homogeneous' ? [] : [scale('diffusion.rates', 30)]),
+      ...(rates === 'homogeneous' || hmcRates(ctx) ? [] : [scale('diffusion.rates', 30)]),
+      ...(hmcRates(ctx)
+        ? [
+            hmcOperator({
+              key: 'diffusion.rates.hmc',
+              label: `HMC(${ctx.id('diffusion.rates')})`,
+              weight: 5,
+              nSteps: 5,
+              attrs: { drawVariance: 1 },
+              children: [
+                el('jointGradient', {}, [
+                  el('gradient', {}, [
+                    ref('distributionLikelihood', ctx.id('diffusion.prior')),
+                    ctx.paramRef('diffusion.rates'),
+                  ]),
+                  el('branchRateGradient', { traitName: trait.name }, [
+                    ref('traitDataLikelihood', ctx.id('traitLikelihood')),
+                  ]),
+                ]),
+                ctx.paramRef('diffusion.rates'),
+                el('signTransform', {}, [ctx.paramRef('diffusion.rates')]),
+              ],
+            }),
+          ]
+        : []),
       ...(rates === 'lognormal' ? [scale('stdev', 5)] : []),
       ...(rates === 'gamma' ? [scale('halfDF', 1)] : []),
       {

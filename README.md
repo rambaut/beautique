@@ -9,9 +9,10 @@ Status: early development. What it covers so far:
 - **Taxon sets:** named groups of taxa, picked by filtering the taxon labels. Each has its tMRCA logged and can be constrained to be a clade.
 - **Timelines:** named divisions of time into epochs, given as epochs of equal duration, as transition dates, or as times before the most recent sample.
 - **Substitution models:** HKY and GTR, with gamma rate heterogeneity.
-- **Clocks:** strict; uncorrelated relaxed (lognormal, gamma, exponential); local clocks on clades (a rate for each chosen taxon set); local clocks in epochs (a rate for each epoch of a timeline).
+- **Clocks:** strict; uncorrelated relaxed (lognormal, gamma, exponential); local clocks on clades (a rate for each chosen taxon set); local clocks in epochs (a rate for each epoch of a timeline); shrinkage local clock.
 - **Tree priors:** constant-size, exponential-growth and Bayesian skygrid coalescents; birth-death with serial sampling; birth-death-sampling with rates that change between the epochs of a timeline.
 - **Traits:** a value for each taxon, read from a field of the taxon labels or from metadata columns. Discrete traits get discrete phylogeography (symmetric or asymmetric rates, BSSVS, Markov jump counts); continuous traits get continuous phylogeography (homogeneous Brownian diffusion or a Cauchy, gamma or lognormal relaxed random walk).
+- **Hamiltonian Monte Carlo:** one setting (MCMC step, or `--set mcmc.operatorStrategy=hmc`) switches on gradient-based operators for the models that have them: the skygrid, the lognormal relaxed clock, birth-death-sampling in epochs, and the lognormal relaxed random walk. The shrinkage local clock always uses them.
 - **Settings:** priors, initial values and operators can be edited; analyses can be saved and reopened as project files.
 
 ## Getting started
@@ -37,6 +38,8 @@ node packages/cli/dist/beautique.js generate --data examples/data/YFV.fasta \
 node packages/cli/dist/beautique.js generate --data examples/data/YFV.fasta \
     --metadata examples/data/YFV_metadata.tsv --discrete-trait country=country \
     --continuous-trait location=latitude,longitude --set models.trait-location.latLong=true
+node packages/cli/dist/beautique.js generate --data examples/data/YFV.fasta --set mcmc.operatorStrategy=hmc \
+    --set models.clock.module=clock.uncorrelated --set models.treePrior.module=treePrior.skygrid
 node packages/cli/dist/beautique.js describe          # settings and their paths
 node packages/cli/dist/beautique.js modules           # available modules
 node packages/cli/dist/beautique.js --help
@@ -112,6 +115,7 @@ export default defineModule({
 - `refs` publishes reference elements that other modules need, such as `treeModel` or `branchRates`; `ctx.ref(name)` fetches one.
 - `ctx.taxonSet(id)` and `ctx.timeline(id)` turn the value of a reference option into the set's XML id and size, or the timeline's transition times and epoch labels. `packages/modules/src/clock/local-clade.module.ts` and `epoch.module.ts` show both.
 - A module in the `trait` slot declares the `traitType` it handles and reads `ctx.trait` for the trait's name, dimension and states. It writes its model in the `traitModel` section, which comes after the tree likelihoods of the sequence data. `packages/modules/src/trait/` has the two built-in ones.
+- A module with gradient-based operators sets `supportsHmc` and returns them from `operators` when `ctx.operatorStrategy` is `hmc`; `packages/modules/src/hmc.ts` has a helper for the operator element. `ctx.priorRef(name)` gives a reference to a parameter's prior for use in a gradient, whatever prior the user has chosen; the prior is then written with an id before the operators. A clock whose operators need gradients of the sequence likelihood publishes the fact `usePreOrder: true`, which the pipeline applies to that clock's tree likelihood. `packages/modules/src/treePrior/skygrid.module.ts` and `clock/uncorrelated.module.ts` are examples.
 - `facts` publishes plain values for other modules, and `ctx.fact(name)` reads one. The birth-death tree priors use it to ask the starting tree for a root below their time of origin.
 
 A module that uses only its `ctx` needs no imports, so it can be shipped as a single JavaScript file and loaded without rebuilding BEAUtique. `examples/modules/jc69.module.js` is an example:

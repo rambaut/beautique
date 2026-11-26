@@ -28,7 +28,7 @@ import {
   type Section,
   type Slot,
 } from './module-api';
-import { priorElement, validatePrior } from './priors';
+import { priorElement, priorElementName, validatePrior } from './priors';
 import type { ModuleRegistry } from './registry';
 import { resolveOptions, validateOptions, type OptionValues } from './schema';
 import { nameProblem, nestTaxonSets, type TaxonSetInfo } from './taxonsets';
@@ -36,7 +36,7 @@ import { resolveTimeline, type TimelineResolution } from './timeline';
 import { resolveTrait, type ResolvedTrait } from './traits';
 import { comment, el, formatNumbers, nodes, ref, serialize, type XmlElement, type XmlNode } from './xml';
 
-export const BEAUTIQUE_VERSION = '0.4.0';
+export const BEAUTIQUE_VERSION = '0.5.0';
 /** The BEAST X version written to the `<beast version>` attribute. */
 export const BEAST_XML_VERSION = '10.6.0';
 
@@ -52,6 +52,8 @@ export interface ResolvedParameter {
   decl: ParameterDecl;
   value?: number | number[];
   prior?: PriorSpec;
+  /** Set when a module needs to refer to the prior, which is then written with this id before the operators. */
+  priorId?: string;
 }
 
 export interface ResolvedOperator {
@@ -92,6 +94,7 @@ interface Entry {
   params: ResolvedParameter[];
   operators: ResolvedOperator[];
   contributions: Partial<Record<Section, XmlNode[]>>;
+  facts?: Record<string, FactValue>;
 }
 
 interface SiteModel {
@@ -454,6 +457,12 @@ function assemble(doc: AnalysisDocument, registry: ModuleRegistry, options: Gene
         });
       },
       paramRef: (name) => ref('parameter', findParam(name).id),
+      priorRef: (name) => {
+        const p = findParam(name);
+        if (!p.prior) throw new Error(`parameter "${name}" has no prior`);
+        p.priorId = `${p.id}.prior`;
+        return ref(priorElementName(p.prior), p.priorId);
+      },
       ref: (name) => lookup(name),
       fact: (name) => facts.get(name),
       xml: { el, ref, comment },
@@ -474,9 +483,9 @@ function assemble(doc: AnalysisDocument, registry: ModuleRegistry, options: Gene
     }
   };
 
-  const publishedFacts = entries.map((entry) => run(entry, 'facts', (m, ctx) => m.facts?.(ctx) ?? {}, {}));
-  for (const values of publishedFacts) {
-    for (const [name, value] of Object.entries(values)) if (!facts.has(name)) facts.set(name, value);
+  for (const entry of entries) {
+    entry.facts = run(entry, 'facts', (m, ctx) => m.facts?.(ctx) ?? {}, {});
+    for (const [name, value] of Object.entries(entry.facts)) if (!facts.has(name)) facts.set(name, value);
   }
   for (const entry of entries) {
     resolveParams(entry, run(entry, 'parameters', (m, ctx) => m.parameters?.(ctx) ?? [], []));
@@ -719,7 +728,7 @@ function assemble(doc: AnalysisDocument, registry: ModuleRegistry, options: Gene
       const id = `${clock.prefix}treeLikelihood`;
       top.push(
         comment('Likelihood for tree given sequence data'),
-        el('treeDataLikelihood', { id, useAmbiguities: false, usePreOrder: false }, [
+        el('treeDataLikelihood', { id, useAmbiguities: false, usePreOrder: clock.facts?.usePreOrder === true }, [
           doc.partitions
             .filter((p) => p.clock === clock.owner)
             .map((p) =>
@@ -736,6 +745,14 @@ function assemble(doc: AnalysisDocument, registry: ModuleRegistry, options: Gene
     }
 
     for (const name of LATE_SECTIONS) top.push(...section(name));
+
+    // Priors that gradient-based operators refer to are defined here, and referred to in the prior.
+    const writePrior = (p: ResolvedParameter): XmlElement => {
+      const prior = priorElement(p.prior as PriorSpec, ref('parameter', p.id), treeModel);
+      return p.priorId === undefined ? prior : el(prior.name, { id: p.priorId, ...prior.attrs }, prior.children);
+    };
+    const namedPriors = result.parameters.filter((p) => p.prior && p.priorId !== undefined);
+    if (namedPriors.length > 0) top.push(comment('Priors referred to by gradient-based operators'), ...namedPriors.map(writePrior));
 
     top.push(
       comment('Define operators'),
@@ -768,7 +785,7 @@ function assemble(doc: AnalysisDocument, registry: ModuleRegistry, options: Gene
           el('prior', { id: 'prior' }, [
             result.parameters
               .filter((p) => p.prior)
-              .map((p) => priorElement(p.prior as PriorSpec, ref('parameter', p.id), treeModel)),
+              .map((p) => (p.priorId === undefined ? writePrior(p) : ref(priorElementName(p.prior as PriorSpec), p.priorId))),
             section('prior'),
           ]),
           el('likelihood', { id: 'likelihood' }, [likelihoods, section('likelihood')]),

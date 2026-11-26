@@ -120,7 +120,8 @@ export interface OperatorDecl {
   /** The auto-optimised tuning attribute, if the operator has one. */
   tuning?: { name: string; value: number };
   attrs?: Record<string, AttrValue>;
-  children: XmlNode[];
+  /** The operator's child elements. Nested arrays are flattened and falsy values dropped. */
+  children: XmlChild[];
 }
 
 export interface Issue {
@@ -172,6 +173,11 @@ export interface ModuleContext {
   /** A `<parameter idref=...>` reference to a declared parameter. */
   paramRef(name: string): XmlElement;
   /**
+   * A reference to the prior of a declared parameter, for gradients. The prior
+   * is then written with the id `<parameter id>.prior` before the operators.
+   */
+  priorRef(name: string): XmlElement;
+  /**
    * A reference element published by another module (see `ModuleDefinition.refs`),
    * e.g. `ctx.ref('treeModel')`. Throws if no module in use provides it.
    */
@@ -218,6 +224,9 @@ export interface ModuleDefinition {
    * `startingRootHeight`: the height the root of the starting tree should have,
    * in years. Tree priors with a time of origin publish it so that the tree
    * starts below the origin; starting tree modules should honour it.
+   * `usePreOrder`: published as true by a clock model whose operators need
+   * gradients of the sequence likelihood; it applies to that clock's own tree
+   * likelihood, whose id is `ctx.id('treeLikelihood')`.
    */
   facts?(ctx: ModuleContext): Record<string, FactValue>;
   generate(ctx: ModuleContext): Contributions;

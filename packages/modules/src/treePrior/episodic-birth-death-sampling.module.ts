@@ -1,4 +1,5 @@
 import { defineModule, type ModuleContext, type ParameterDecl } from '@beautique/core';
+import { hmcOperator, useHmc } from '../hmc';
 import { originFacts, originParameter, scaleOperator, startingRootHeight } from './origin';
 
 /** The transition times of the chosen timeline; none when the rates are constant. */
@@ -6,9 +7,9 @@ const heights = (ctx: ModuleContext): number[] =>
   ctx.options.timeline === null ? [] : ctx.timeline(ctx.options.timeline).heights;
 
 const RATES = [
-  { name: 'ebds.birthRate', what: 'Birth (transmission) rate', value: 3, mu: 1 },
-  { name: 'ebds.deathRate', what: 'Death (becoming uninfectious) rate', value: 1, mu: 0 },
-  { name: 'ebds.samplingRate', what: 'Sampling rate', value: 1, mu: 0 },
+  { name: 'ebds.birthRate', what: 'Birth (transmission) rate', value: 3, mu: 1, wrt: 'birthRate' },
+  { name: 'ebds.deathRate', what: 'Death (becoming uninfectious) rate', value: 1, mu: 0, wrt: 'deathRate' },
+  { name: 'ebds.samplingRate', what: 'Sampling rate', value: 1, mu: 0, wrt: 'samplingRate' },
 ] as const;
 
 /**
@@ -26,6 +27,7 @@ export default defineModule({
     'A birth-death-sampling tree prior whose rates of birth, death and sampling each have a value in every epoch of a timeline. The effective reproductive number in each epoch is logged.',
   citation: 'Stadler, Kühnert, Bonhoeffer & Drummond (2013) PNAS 110:228-233',
   minBeast: '10.6.0',
+  supportsHmc: true,
   options: {
     timeline: {
       type: 'timelineRef',
@@ -59,10 +61,35 @@ export default defineModule({
     }));
     return [...rates, originParameter(ctx, 'ebds.origin')];
   },
-  operators: (ctx) => [
-    ...RATES.map((rate) => scaleOperator(ctx, rate.name, heights(ctx).length > 0 ? 3 : 1)),
-    scaleOperator(ctx, 'ebds.origin'),
-  ],
+  operators: (ctx) => {
+    const { el, ref } = ctx.xml;
+    const weight = heights(ctx).length > 0 ? 3 : 1;
+    return [
+      ...RATES.map((rate) =>
+        useHmc(ctx)
+          ? hmcOperator({
+              key: `${rate.name}.hmc`,
+              label: `HMC(${rate.name})`,
+              weight,
+              nSteps: 10,
+              attrs: { drawVariance: 1 },
+              children: [
+                el('jointGradient', {}, [
+                  el('birthDeathLikelihoodGradient', { wrtParameter: rate.wrt, useNewLoop: true }, [
+                    ref('birthDeathLikelihood', 'birthDeathLikelihood'),
+                    ctx.ref('treeModel'),
+                  ]),
+                  el('gradient', {}, [ctx.priorRef(rate.name), ctx.paramRef(rate.name)]),
+                ]),
+                ctx.paramRef(rate.name),
+                el('signTransform', {}, [ctx.paramRef(rate.name)]),
+              ],
+            })
+          : scaleOperator(ctx, rate.name, weight),
+      ),
+      scaleOperator(ctx, 'ebds.origin'),
+    ];
+  },
   generate: (ctx) => {
     const { el, ref, comment } = ctx.xml;
     const times = heights(ctx);

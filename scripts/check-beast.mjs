@@ -40,6 +40,12 @@ const cases = {
   'continuous-lognormal': ['--metadata', 'examples/data/YFV_metadata.tsv', '--continuous-trait', 'location=latitude,longitude', ...S('models.trait-location.rates', 'lognormal')],
   'continuous-homogeneous-one-dimension': ['--metadata', 'examples/data/YFV_metadata.tsv', '--date-column', 'year', '--continuous-trait', 'latitude=latitude', ...S('models.trait-latitude.rates', 'homogeneous')],
   'discrete-and-continuous-skygrid-ucln': ['--metadata', 'examples/data/YFV_metadata.tsv', '--discrete-trait', 'country=country', '--continuous-trait', 'location=latitude,longitude', ...M('treePrior', 'treePrior.skygrid'), ...M('clock', 'clock.uncorrelated')],
+  'hmc-skygrid': [...S('mcmc.operatorStrategy', 'hmc'), ...M('treePrior', 'treePrior.skygrid'), ...S('models.treePrior.gridPoints', '20')],
+  'hmc-relaxed-clock': [...S('mcmc.operatorStrategy', 'hmc'), ...M('clock', 'clock.uncorrelated')],
+  'hmc-shrinkage-clock': [...M('clock', 'clock.shrinkage')],
+  'hmc-birth-death-epochs': [...S('mcmc.operatorStrategy', 'hmc'), '--timeline', 'decades=5x10years', ...M('treePrior', 'treePrior.episodicBirthDeathSampling'), ...S('models.treePrior.timeline', 'decades')],
+  'hmc-relaxed-random-walk': [...S('mcmc.operatorStrategy', 'hmc'), '--metadata', 'examples/data/YFV_metadata.tsv', '--continuous-trait', 'location=latitude,longitude', ...S('models.trait-location.rates', 'lognormal')],
+  'hmc-everything': [...S('mcmc.operatorStrategy', 'hmc'), '--codon', '12+3', '--metadata', 'examples/data/YFV_metadata.tsv', '--continuous-trait', 'location=latitude,longitude', ...S('models.trait-location.rates', 'lognormal'), '--discrete-trait', 'country=country', ...M('clock', 'clock.uncorrelated'), ...M('treePrior', 'treePrior.skygrid')],
   'epochs-clock-and-birth-death-ucln': ['--codon', '12+3', '--clade', 'Trinidad=_Trinidad$', '--timeline', 'eras=ago:15,30', ...M('treePrior', 'treePrior.episodicBirthDeathSampling'), ...S('models.treePrior.timeline', 'eras'), ...M('clock', 'clock.uncorrelated')],
 };
 
