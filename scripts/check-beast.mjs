@@ -6,10 +6,15 @@
  * Build the CLI first (npm run build:cli).
  */
 import { spawnSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
 const CLI = 'packages/cli/dist/beautique.js';
 const DATA = 'examples/data/YFV.fasta';
+// The example data with labels as name|country|year, which the discrete phylogeography template expects.
+const PIPED = 'out/check/YFV_piped.fasta';
+mkdirSync('out/check', { recursive: true });
+writeFileSync(PIPED, readFileSync(DATA, 'utf8').replace(/^>(\d+)_(.*)_([^_\n]+)$/gm, '>$2|$3|$1'));
+
 const M = (id, module) => ['-s', `models.${id}.module=${module}`];
 const S = (path, value) => ['-s', `${path}=${value}`];
 
@@ -46,14 +51,21 @@ const cases = {
   'hmc-birth-death-epochs': [...S('mcmc.operatorStrategy', 'hmc'), '--timeline', 'decades=5x10years', ...M('treePrior', 'treePrior.episodicBirthDeathSampling'), ...S('models.treePrior.timeline', 'decades')],
   'hmc-relaxed-random-walk': [...S('mcmc.operatorStrategy', 'hmc'), '--metadata', 'examples/data/YFV_metadata.tsv', '--continuous-trait', 'location=latitude,longitude', ...S('models.trait-location.rates', 'lognormal')],
   'hmc-everything': [...S('mcmc.operatorStrategy', 'hmc'), '--codon', '12+3', '--metadata', 'examples/data/YFV_metadata.tsv', '--continuous-trait', 'location=latitude,longitude', ...S('models.trait-location.rates', 'lognormal'), '--discrete-trait', 'country=country', ...M('clock', 'clock.uncorrelated'), ...M('treePrior', 'treePrior.skygrid')],
+  'module-file-tn93': ['-m', 'examples/modules/tn93.module.js', ...M('substitution', 'substitution.tn93')],
+  'module-file-jc69-template': ['-m', 'examples/modules/jc69.module.js', '-t', 'examples/templates/jc69-strict-constant.json'],
+  'template-outbreak-growth': ['-t', 'outbreak-growth'],
+  'template-skygrid-relaxed': ['-t', 'skygrid-relaxed'],
+  'template-coding-skygrid': ['-t', 'coding-skygrid'],
+  'template-discrete-phylogeography': ['-t', 'discrete-phylogeography', '-d', PIPED],
+  'template-continuous-phylogeography': ['-t', 'continuous-phylogeography', '--metadata', 'examples/data/YFV_metadata.tsv'],
+  'template-birth-death-epochs': ['-t', 'birth-death-epochs'],
   'epochs-clock-and-birth-death-ucln': ['--codon', '12+3', '--clade', 'Trinidad=_Trinidad$', '--timeline', 'eras=ago:15,30', ...M('treePrior', 'treePrior.episodicBirthDeathSampling'), ...S('models.treePrior.timeline', 'eras'), ...M('clock', 'clock.uncorrelated')],
 };
 
-mkdirSync('out/check', { recursive: true });
 let failed = 0;
 for (const [name, args] of Object.entries(cases)) {
   const xml = `out/check/${name}.xml`;
-  const gen = spawnSync('node', [CLI, 'generate', '-d', DATA, '-n', name, '-s', 'mcmc.chainLength=2000', ...args, '-o', xml], { encoding: 'utf8' });
+  const gen = spawnSync('node', [CLI, 'generate', ...(args.includes('-d') ? [] : ['-d', DATA]), '-n', name, '-s', 'mcmc.chainLength=2000', ...args, '-o', xml], { encoding: 'utf8' });
   let status = 'ok';
   let detail = '';
   if (gen.status !== 0) {

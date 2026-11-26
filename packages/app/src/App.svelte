@@ -8,6 +8,9 @@
   import OperatorsStep from './steps/OperatorsStep.svelte';
   import PartitionsStep from './steps/PartitionsStep.svelte';
   import PriorsStep from './steps/PriorsStep.svelte';
+  import SaveTemplateStep from './steps/SaveTemplateStep.svelte';
+  import SettingsStep from './steps/SettingsStep.svelte';
+  import StartStep from './steps/StartStep.svelte';
   import TaxonSetsStep from './steps/TaxonSetsStep.svelte';
   import TimelinesStep from './steps/TimelinesStep.svelte';
   import TraitsStep from './steps/TraitsStep.svelte';
@@ -48,7 +51,7 @@
 
   <nav aria-label="Steps">
     <ol>
-      {#each STEPS as step (step.id)}
+      {#each app.steps as step (step.id)}
         <li>
           <button class:current={app.step === step.id} aria-current={app.step === step.id ? 'step' : undefined} onclick={() => (app.step = step.id)}>
             <span>{step.label}</span>
@@ -61,12 +64,24 @@
         </li>
       {/each}
     </ol>
+    {#if app.guided}
+      <p class="help">
+        Only what the template asks for is shown.
+        <button class="link" onclick={() => app.showAllSteps()}>Show all steps</button>
+      </p>
+    {/if}
   </nav>
 
   <main>
     <h1>{title}</h1>
     {#if app.importError && app.step !== 'data'}<p class="message" role="alert">{app.importError}</p>{/if}
-    {#if app.step === 'data'}
+    {#if app.step === 'start'}
+      <StartStep />
+    {:else if app.step === 'settings'}
+      <SettingsStep />
+    {:else if app.step === 'saveTemplate'}
+      <SaveTemplateStep />
+    {:else if app.step === 'data'}
       <DataStep />
     {:else if app.step === 'dates'}
       <DatesStep />

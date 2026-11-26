@@ -88,16 +88,18 @@ function finish(doc: AnalysisDocument): void {
 }
 
 /**
- * Add partitions for an alignment. An unbound partition (from a template) is
- * used if there is one; otherwise the new partitions share the models of the
- * first partition. An alignment with charsets gets one partition per charset.
+ * Add partitions for an alignment. Unbound partitions (from a template) are
+ * used if there are any: all of them take the alignment, keeping their site
+ * ranges, so a template can hold a codon-position split. Otherwise the new
+ * partitions share the models of the first partition. An alignment with
+ * charsets gets one partition per charset.
  */
 export function attachAlignment(doc: AnalysisDocument, alignment: AlignmentInfo): void {
-  const unbound = doc.partitions.find((p) => p.alignment === null);
-  const model = unbound ?? doc.partitions[0];
+  const unbound = doc.partitions.filter((p) => p.alignment === null);
+  const model = unbound[0] ?? doc.partitions[0];
   if (!model) throw new Error('The document has no partition to take models from');
-  const index = unbound ? doc.partitions.indexOf(unbound) : doc.partitions.length;
-  if (unbound) doc.partitions.splice(index, 1);
+  const index = unbound.length > 0 ? doc.partitions.indexOf(unbound[0]) : doc.partitions.length;
+  doc.partitions = doc.partitions.filter((p) => p.alignment !== null);
 
   const links = { substitution: model.substitution, siteHeterogeneity: model.siteHeterogeneity, clock: model.clock };
   const added: Partition[] = [];
@@ -111,12 +113,19 @@ export function attachAlignment(doc: AnalysisDocument, alignment: AlignmentInfo)
         ...links,
       });
     }
+  } else if (unbound.length > 1) {
+    for (const partition of unbound) {
+      added.push({ ...partition, id: uniquePartitionId(doc, `${alignment.id}:${partition.name || added.length + 1}`), alignment: alignment.id });
+      doc.partitions.splice(index + added.length - 1, 0, added[added.length - 1]);
+    }
+    finish(doc);
+    return;
   } else {
     added.push({
       id: uniquePartitionId(doc, alignment.id),
-      name: unbound && unbound.name !== '' ? unbound.name : alignment.name,
+      name: unbound[0] && unbound[0].name !== '' ? unbound[0].name : alignment.name,
       alignment: alignment.id,
-      ...(unbound?.sites ? { sites: unbound.sites } : {}),
+      ...(unbound[0]?.sites ? { sites: unbound[0].sites } : {}),
       ...links,
     });
   }

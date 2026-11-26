@@ -30,6 +30,7 @@ test('load metadata, take dates from it, and add discrete and continuous traits'
   };
 
   await page.goto('/');
+  await go(page, 'Data');
   await page.locator('.dropzone input[type=file]').setInputFiles([FASTA, METADATA]);
   await expect(page.getByText('71 taxa in total')).toBeVisible();
   const table = main.getByRole('row', { name: /^YFV_metadata/ });

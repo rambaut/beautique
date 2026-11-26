@@ -24,6 +24,7 @@ test('switch on Hamiltonian Monte Carlo operators for the models that have them'
   const preview = page.getByLabel('XML preview').locator('pre');
 
   await page.goto('/');
+  await go(page, 'Data');
   await page.locator('.dropzone input[type=file]').setInputFiles('examples/data/YFV.fasta');
   await expect(page.getByText('71 taxa in total')).toBeVisible();
 

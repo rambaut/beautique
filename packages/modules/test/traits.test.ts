@@ -167,7 +167,7 @@ describe('traits', () => {
     trait.sources = [parseValueSource('host', doc.data)];
     expect(resolveTrait(trait, doc.data, taxa).problems).toEqual(['has 3 values that are not numbers (human, human, bat)']);
     trait.sources = [{ kind: 'column', table: 't1', column: 'gone' }];
-    expect(resolveTrait(trait, doc.data, taxa).problems).toEqual(['refers to a metadata column that no longer exists']);
+    expect(resolveTrait(trait, doc.data, taxa).problems).toEqual(['needs a metadata table with a column called "gone"']);
     trait.sources = [{ kind: 'labelField', delimiter: '|', field: 7 }];
     expect(resolveTrait(trait, doc.data, taxa).problems).toEqual(['has no value for any taxon']);
   });

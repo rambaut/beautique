@@ -67,3 +67,5 @@ export function defaultTemplate(): AnalysisDocument {
     },
   };
 }
+
+export * from './templates';

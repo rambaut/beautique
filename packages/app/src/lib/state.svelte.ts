@@ -6,8 +6,12 @@ import {
   detectDateSpec,
   generate,
   looksLikeTable,
+  makeTemplate,
+  ModuleRegistry,
+  modulesFromExports,
   parseTable,
   schemaRefs,
+  settingField,
   type AlignmentData,
   type MetadataTable,
   type AnalysisDocument,
@@ -19,14 +23,38 @@ import {
   type TaxonSet,
   type Timeline,
   type Trait,
+  type ModuleDefinition,
   type Slot,
 } from '@beautique/core';
-import { createRegistry, defaultTemplate } from '@beautique/modules';
+import { builtinModules, defaultTemplate } from '@beautique/modules';
 
-export const registry = createRegistry();
+/** A registry that the interface follows: what is drawn from it is redrawn when a module is added. */
+class ReactiveRegistry extends ModuleRegistry {
+  private version = $state(0);
+
+  override register(module: ModuleDefinition): void {
+    super.register(module);
+    this.version++;
+  }
+
+  override get(id: string): ModuleDefinition | undefined {
+    void this.version;
+    return super.get(id);
+  }
+
+  override all(): ModuleDefinition[] {
+    void this.version;
+    return super.all();
+  }
+}
+
+export const registry: ModuleRegistry = new ReactiveRegistry();
+for (const module of builtinModules) registry.register(module);
 
 export type StepId =
+  | 'start'
   | 'data'
+  | 'settings'
   | 'dates'
   | 'taxonSets'
   | 'timelines'
@@ -38,10 +66,17 @@ export type StepId =
   | 'priors'
   | 'operators'
   | 'mcmc'
-  | 'generate';
+  | 'generate'
+  | 'saveTemplate';
 
-export const STEPS: { id: StepId; label: string }[] = [
-  { id: 'data', label: 'Data' },
+/**
+ * The steps, in order. With a template in use only the `guided` ones are
+ * shown, and `settings` (what the template asks for) stands in for the rest.
+ */
+export const STEPS: { id: StepId; label: string; guided?: 'also' | 'only' }[] = [
+  { id: 'start', label: 'Template', guided: 'also' },
+  { id: 'data', label: 'Data', guided: 'also' },
+  { id: 'settings', label: 'Settings', guided: 'only' },
   { id: 'dates', label: 'Samples and dates' },
   { id: 'taxonSets', label: 'Taxon sets' },
   { id: 'timelines', label: 'Timelines' },
@@ -53,8 +88,26 @@ export const STEPS: { id: StepId; label: string }[] = [
   { id: 'priors', label: 'Priors' },
   { id: 'operators', label: 'Operators' },
   { id: 'mcmc', label: 'MCMC' },
-  { id: 'generate', label: 'Generate' },
+  { id: 'generate', label: 'Generate', guided: 'also' },
+  { id: 'saveTemplate', label: 'Save as template' },
 ];
+
+/** A module file the user has loaded. */
+export interface LoadedModuleFile {
+  file: string;
+  modules: { id: string; label: string; slot: Slot }[];
+}
+
+function emptyLists(doc: AnalysisDocument): AnalysisDocument {
+  return {
+    ...doc,
+    taxonSets: doc.taxonSets ?? [],
+    timelines: doc.timelines ?? [],
+    traits: doc.traits ?? [],
+    template: { description: doc.template?.description ?? '', ask: doc.template?.ask ?? [] },
+    data: { ...doc.data, alignments: [], tables: [] },
+  };
+}
 
 const SLOT_STEP: Record<Slot, StepId> = {
   substitution: 'substitution',
@@ -82,8 +135,41 @@ class AppState {
   alignments = $state.raw<AlignmentData[]>([]);
   /** Metadata tables, held outside deep reactive state like the sequence data. */
   tables = $state.raw<MetadataTable[]>([]);
-  step = $state<StepId>('data');
+  private current = $state<StepId>('start');
+  /** True while a template is in use and only the settings it asks for are shown. */
+  guided = $state(false);
+  /** The title of the built-in template in use, if the analysis started from one. */
+  templateTitle = $state<string | null>(null);
   importError = $state<string | null>(null);
+  moduleFiles = $state<LoadedModuleFile[]>([]);
+  moduleError = $state<string | null>(null);
+
+  get step(): StepId {
+    return this.current;
+  }
+
+  /** Going to a step that the guided view leaves out shows all the steps. */
+  set step(step: StepId) {
+    const info = STEPS.find((s) => s.id === step);
+    if (this.guided ? !info?.guided : info?.guided === 'only') this.guided = !this.guided;
+    this.current = step;
+  }
+
+  /** Leave the guided view: show every step, with the settings the template fixed. */
+  showAllSteps(): void {
+    this.guided = false;
+    if (this.current === 'settings') this.current = 'data';
+  }
+
+  /** The steps in the navigation. */
+  get steps(): typeof STEPS {
+    return STEPS.filter((s) => (this.guided ? s.guided : s.guided !== 'only'));
+  }
+
+  /** What the document's template says of itself (every document in the app has this). */
+  get template(): { description?: string; ask: string[] } {
+    return this.doc.template ?? { ask: [] };
+  }
 
   /** The complete document, including sequence data. */
   get document(): AnalysisDocument {
@@ -143,6 +229,7 @@ class AppState {
     const list = [...files];
     try {
       for (const file of list) {
+        if (/\.m?js$/i.test(file.name)) throw new Error(`${file.name} looks like a module: load modules in the Template step`);
         const content = await file.text();
         if (/^\s*\{/.test(content)) {
           this.open(content);
@@ -197,16 +284,64 @@ class AppState {
   open(json: string): void {
     const parsed: unknown = JSON.parse(json);
     assertDocument(parsed);
+    if (parsed.kind === 'template' && parsed.data.alignments.length === 0) {
+      this.useTemplate(parsed, null);
+      return;
+    }
     this.alignments = parsed.data.alignments;
     this.tables = parsed.data.tables ?? [];
-    this.doc = {
-      ...parsed,
-      taxonSets: parsed.taxonSets ?? [],
-      timelines: parsed.timelines ?? [],
-      traits: parsed.traits ?? [],
-      data: { ...parsed.data, alignments: [], tables: [] },
-    };
+    this.doc = emptyLists(parsed);
+    this.templateTitle = null;
+    this.guided = false;
     this.step = 'data';
+  }
+
+  /**
+   * Start again from a template, keeping the data that is loaded. With
+   * `guided`, only the settings the template asks for are shown.
+   */
+  useTemplate(template: AnalysisDocument, title: string | null, guided = true): void {
+    const doc = emptyLists(structuredClone(template));
+    for (const alignment of this.alignments) attachAlignment(doc, alignment);
+    if (this.alignments.length > 0) {
+      doc.kind = 'project';
+      if (doc.name === 'analysis') doc.name = this.doc.name;
+    }
+    this.doc = doc;
+    if (this.alignments.length > 0 && doc.data.dates.mode === 'auto') this.detectDates();
+    this.templateTitle = title;
+    this.guided = guided;
+    this.current = 'data';
+  }
+
+  /** Save the design without the data, as a template that asks for the settings listed in it. */
+  saveTemplate(): void {
+    const doc = $state.snapshot(this.doc) as AnalysisDocument;
+    // settings that were ticked and have since gone (their model was changed) are not asked for
+    const ask = this.template.ask.filter((path) => settingField(doc, registry, path) !== undefined);
+    const template = makeTemplate(doc, { ask });
+    download(`${JSON.stringify(template, null, 1)}\n`, `${this.fileStem}.template.json`, 'application/json');
+  }
+
+  /**
+   * Load module files (JavaScript ES modules) and add their modules to the
+   * registry. This runs the code in the files, so it is only done when the
+   * user picks them for that purpose.
+   */
+  async loadModules(files: Iterable<File>): Promise<void> {
+    this.moduleError = null;
+    for (const file of [...files]) {
+      const url = URL.createObjectURL(new Blob([await file.text()], { type: 'text/javascript' }));
+      try {
+        const modules = modulesFromExports(await import(/* @vite-ignore */ url));
+        for (const module of modules) registry.register(module);
+        this.moduleFiles.push({ file: file.name, modules: modules.map(({ id, label, slot }) => ({ id, label, slot })) });
+      } catch (e) {
+        this.moduleError = `${file.name}: ${e instanceof Error ? e.message : String(e)}`;
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
   }
 
   /** Save the whole analysis, including the sequence data, as a project file. */
@@ -241,6 +376,7 @@ class AppState {
   /** The step an issue belongs to, for badges in the navigation. */
   stepOf(issue: Issue): StepId {
     const path = issue.path ?? '';
+    if (this.guided && this.template.ask.includes(path)) return 'settings';
     if (path.startsWith('mcmc.') || path === 'name') return 'mcmc';
     if (path.startsWith('parameters.')) return 'priors';
     if (path.startsWith('operators.')) return 'operators';
@@ -257,7 +393,9 @@ class AppState {
     this.doc = defaultTemplate();
     this.alignments = [];
     this.tables = [];
-    this.step = 'data';
+    this.templateTitle = null;
+    this.guided = false;
+    this.current = 'start';
     this.importError = null;
   }
 }

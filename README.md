@@ -14,6 +14,8 @@ Status: early development. What it covers so far:
 - **Traits:** a value for each taxon, read from a field of the taxon labels or from metadata columns. Discrete traits get discrete phylogeography (symmetric or asymmetric rates, BSSVS, Markov jump counts); continuous traits get continuous phylogeography (homogeneous Brownian diffusion or a Cauchy, gamma or lognormal relaxed random walk).
 - **Hamiltonian Monte Carlo:** one setting (MCMC step, or `--set mcmc.operatorStrategy=hmc`) switches on gradient-based operators for the models that have them: the skygrid, the lognormal relaxed clock, birth-death-sampling in epochs, and the lognormal relaxed random walk. The shrinkage local clock always uses them.
 - **Settings:** priors, initial values and operators can be edited; analyses can be saved and reopened as project files.
+- **Templates:** ready-made designs for common questions (outbreak growth rate, population history, codon-partitioned coding sequence, discrete and continuous phylogeography, reproductive number through time). A template asks for a few settings and decides the rest. Any analysis can be saved as a template and applied to other data, in the app or on the command line.
+- **Extra modules:** models that are not built in can be loaded from JavaScript files, in the app and on the command line.
 
 ## Getting started
 
@@ -40,12 +42,19 @@ node packages/cli/dist/beautique.js generate --data examples/data/YFV.fasta \
     --continuous-trait location=latitude,longitude --set models.trait-location.latLong=true
 node packages/cli/dist/beautique.js generate --data examples/data/YFV.fasta --set mcmc.operatorStrategy=hmc \
     --set models.clock.module=clock.uncorrelated --set models.treePrior.module=treePrior.skygrid
-node packages/cli/dist/beautique.js describe          # settings and their paths
+node packages/cli/dist/beautique.js templates         # the built-in templates
+node packages/cli/dist/beautique.js generate --template skygrid-relaxed --data examples/data/YFV.fasta \
+    --set models.treePrior.gridPoints=20
+node packages/cli/dist/beautique.js describe skygrid-relaxed   # a template's settings, their paths, and what it expects of the data
+node packages/cli/dist/beautique.js template YFV.beautique.json --ask models.clock.rateMode \
+    --description 'My design'                         # make a template from a project saved by the app
 node packages/cli/dist/beautique.js modules           # available modules
 node packages/cli/dist/beautique.js --help
 ```
 
-`generate` starts from a template (the built-in one unless `--template` is given), attaches the data files, applies any `--set path=value` settings and writes `<name>.xml`. A project file saved from the app can be given as the template, in which case no data files are needed.
+`generate` starts from a template, attaches the data files, applies any `--set path=value` settings and writes `<name>.xml`. `--template` takes the name of a built-in template or a template file; without it the template called `default` is used. A project file saved from the app can be given as the template, in which case no data files are needed.
+
+`template` makes a template from a project file: the design without the data. `--ask path` (repeatable) lists the settings to ask for when the template is used; without it the template asks for the analysis name and the chain length. `describe` lists the settings of a template or project with their paths, marks the ones it asks for, and says what the template expects of the data.
 
 `--taxon-set name=pattern` defines a taxon set from the taxa whose labels match a regular expression (or `name=@file` for a file listing them), and `--clade` does the same and constrains the set to be a clade. `--timeline name=spec` defines a timeline: `12x1months` for equal epochs, a comma-separated list of dates, or `ago:0.5,1,2` for times in years before the most recent sample. Settings that refer to a taxon set or timeline take its name.
 
@@ -56,10 +65,11 @@ node packages/cli/dist/beautique.js --help
 | Path | Contents |
 |---|---|
 | `packages/core` | Document format, module API, option schemas and validation, data import, the XML generation pipeline. No DOM or node dependencies. |
-| `packages/modules` | The built-in modules and the default template. |
+| `packages/modules` | The built-in modules and templates. |
 | `packages/app` | The Svelte single-page app. |
 | `packages/cli` | The node command-line tool. |
-| `examples` | Example data (sequences and a metadata table), a template and a drop-in module. |
+| `examples` | Example data (sequences and a metadata table), a template and two drop-in modules. |
+| `docs` | The guide to writing a module. |
 
 ## Concepts
 
@@ -67,7 +77,7 @@ node packages/cli/dist/beautique.js --help
 
 **Partition.** A set of alignment columns with a substitution model, an optional rate heterogeneity model and a clock. Partitions that point at the same model instance share its parameters. When there is more than one model of a kind, each one's XML ids are prefixed with the names of its partitions (`CP1+2.kappa`).
 
-**Template.** A document without data. Settings it gives a value for are fixed, settings it omits take the module's default, and settings listed under `template.ask` are the ones to ask for when the template is applied to a dataset.
+**Template.** A document without data. Settings it gives a value for are fixed, settings it omits take the module's default, and settings listed under `template.ask` are the ones to ask for when the template is applied to a dataset. A template keeps what does not depend on particular data: the models, a codon-position split, priors and operators, timelines, where dates and traits are read from (a label field, or a named column of the first metadata table), and the names and constraints of taxon sets, whose taxa are filled in for each dataset. In the app, choosing a template shows four steps: Template, Data, Settings (what the template asks for) and Generate; "Show all steps" brings back the rest. The Save as template step makes a template from the current analysis. The built-in templates are written in code, in `packages/modules/src/templates.ts`.
 
 **Taxa.** Taxon labels may hold metadata in delimited fields, usually separated by `|`. One field, normally the first, is the key that links a taxon across files. The taxa of an analysis are the union of the keys in all files; a partition that lacks a taxon is written as missing data.
 
@@ -118,16 +128,18 @@ export default defineModule({
 - A module with gradient-based operators sets `supportsHmc` and returns them from `operators` when `ctx.operatorStrategy` is `hmc`; `packages/modules/src/hmc.ts` has a helper for the operator element. `ctx.priorRef(name)` gives a reference to a parameter's prior for use in a gradient, whatever prior the user has chosen; the prior is then written with an id before the operators. A clock whose operators need gradients of the sequence likelihood publishes the fact `usePreOrder: true`, which the pipeline applies to that clock's tree likelihood. `packages/modules/src/treePrior/skygrid.module.ts` and `clock/uncorrelated.module.ts` are examples.
 - `facts` publishes plain values for other modules, and `ctx.fact(name)` reads one. The birth-death tree priors use it to ask the starting tree for a root below their time of origin.
 
-A module that uses only its `ctx` needs no imports, so it can be shipped as a single JavaScript file and loaded without rebuilding BEAUtique. `examples/modules/jc69.module.js` is an example:
+A module that uses only its `ctx` needs no imports, so it can be shipped as a single JavaScript file and loaded without rebuilding BEAUtique: with `--module file.js` on the command line, or with "Load module files" in the Template step of the app. A module file is a program, so load only files you trust. `examples/modules/` has two:
 
 ```
 node packages/cli/dist/beautique.js generate \
     --module examples/modules/jc69.module.js \
     --template examples/templates/jc69-strict-constant.json \
     --data examples/data/YFV.fasta
+node packages/cli/dist/beautique.js generate --module examples/modules/tn93.module.js \
+    --data examples/data/YFV.fasta --set models.substitution.module=substitution.tn93
 ```
 
-Loading such files in the app is planned; today it works in the CLI.
+[docs/writing-modules.md](docs/writing-modules.md) is a guide that builds the TN93 module step by step and describes the rest of the module API.
 
 ## Testing
 
@@ -136,7 +148,7 @@ npm test                      # unit and golden-file tests (Vitest)
 npm run typecheck
 npm run e2e                   # browser test (Playwright); PW_CHANNEL=chrome uses an installed Chrome
 npm run beast -- out/YFV.xml  # run a generated file in a local BEAST build ($BEAST_HOME or ../BEAST)
-npm run check:beast           # generate every model combination in scripts/check-beast.mjs and run each in BEAST
+npm run check:beast           # generate every model combination and template in scripts/check-beast.mjs and run each in BEAST
 ```
 
 When a change to the XML output is intended, update the golden files with `npx vitest run -u` and review the diff.

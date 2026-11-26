@@ -56,7 +56,10 @@ export function resolveTrait(trait: Trait, data: DataSection, taxa: Taxon[]): Re
 
   const sources = trait.sources;
   if (sources.length === 0) problems.push('needs to be told where its values come from');
-  else if (sources.some((s) => !sourceExists(data, s))) problems.push('refers to a metadata column that no longer exists');
+  else if (sources.some((s) => !sourceExists(data, s))) {
+    const lost = sources.filter((s) => !sourceExists(data, s)).map((s) => (s.kind === 'column' ? `"${s.column}"` : ''));
+    problems.push(`needs a metadata table with ${lost.length === 1 ? 'a column' : 'columns'} called ${lost.join(' and ')}`);
+  }
   else if (trait.type === 'discrete' && sources.length > 1) problems.push('is discrete, so takes its values from one place');
 
   let missing = 0;

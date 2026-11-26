@@ -38,3 +38,16 @@ export class ModuleRegistry {
     return [...this.modules.values()];
   }
 }
+
+/**
+ * The module definitions in a loaded ES module: its default export, which is
+ * one module or an array of them. Throws if there is none.
+ */
+export function modulesFromExports(exports: unknown): ModuleDefinition[] {
+  const value = (exports as { default?: unknown } | null)?.default;
+  const modules = (Array.isArray(value) ? value : [value]) as ModuleDefinition[];
+  if (modules.length === 0 || modules.some((m) => !m || typeof m !== 'object' || typeof m.id !== 'string')) {
+    throw new Error('Not a BEAUtique module file: its default export should be a module definition, or an array of them');
+  }
+  return modules;
+}

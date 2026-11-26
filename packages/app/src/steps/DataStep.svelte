@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AlignmentData, MetadataTable } from '@beautique/core';
   import { app } from '../lib/state.svelte';
+  import TemplateNeeds from '../lib/TemplateNeeds.svelte';
 
   let dragging = $state(false);
 
@@ -39,6 +40,8 @@
     });
   }
 </script>
+
+{#if app.guided}<TemplateNeeds />{/if}
 
 <section class="card">
   <h2>Sequence data</h2>

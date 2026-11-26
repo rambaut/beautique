@@ -36,7 +36,7 @@ import { resolveTimeline, type TimelineResolution } from './timeline';
 import { resolveTrait, type ResolvedTrait } from './traits';
 import { comment, el, formatNumbers, nodes, ref, serialize, type XmlElement, type XmlNode } from './xml';
 
-export const BEAUTIQUE_VERSION = '0.5.0';
+export const BEAUTIQUE_VERSION = '0.6.0';
 /** The BEAST X version written to the `<beast version>` attribute. */
 export const BEAST_XML_VERSION = '10.6.0';
 

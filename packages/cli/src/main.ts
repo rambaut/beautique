@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -11,10 +12,14 @@ import {
   generate,
   listSettings,
   looksLikeTable,
+  makeTemplate,
+  modulesFromExports,
   parseTable,
   parseValueSource,
   setCodonScheme,
   setSetting,
+  settingField,
+  templateRequirements,
   SLOT_LABELS,
   BEAUTIQUE_VERSION,
   TIME_UNITS,
@@ -25,17 +30,20 @@ import {
   type TimeUnit,
   type Timeline,
 } from '@beautique/core';
-import { createRegistry, defaultTemplate } from '@beautique/modules';
+import { builtinTemplates, createRegistry, defaultTemplate, findTemplate } from '@beautique/modules';
 
 const USAGE = `BEAUtique v${BEAUTIQUE_VERSION}: generate BEAST X analysis files
 
 Usage:
   beautique generate --data <file> [options]    Write a BEAST XML file
-  beautique describe [template.json]            List a template's settings
+  beautique describe [template] [--set ...]     List a template's settings and what it needs
+  beautique templates                           List the built-in templates
+  beautique template <project.json> [options]   Make a template from a project file
   beautique modules                             List the available modules
 
 Options for generate:
-  -t, --template <file>     Template or project (JSON). Default: the built-in template
+  -t, --template <name>     A built-in template (see "templates"), or a template or project
+                            file (JSON). Default: the template called "default"
   -d, --data <file>         Aligned sequences (FASTA or NEXUS); repeat for several files
       --metadata <file>     A table of metadata about the taxa (CSV or TSV with a header row;
                             the first column identifies the taxon); repeatable
@@ -62,6 +70,11 @@ Options for generate:
       --date-delimiter <c>  Delimiter that separates label fields for dates
       --no-dates            Do not read dates from taxon labels
   -m, --module <file>       Load an extra module (JavaScript ES module); repeatable
+
+Options for template:
+  -o, --output <file>       Output file. Default: <name>.template.json
+      --ask <path>          A setting to ask for when the template is used; repeatable
+      --description <text>  What the template is for
 `;
 
 class UsageError extends Error {}
@@ -70,13 +83,22 @@ async function loadRegistry(paths: string[]): Promise<ModuleRegistry> {
   const extra: ModuleDefinition[] = [];
   for (const path of paths) {
     const loaded = await import(pathToFileURL(resolve(path)).href);
-    extra.push(loaded.default as ModuleDefinition);
+    try {
+      extra.push(...modulesFromExports(loaded));
+    } catch (e) {
+      throw new UsageError(`${path}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
   return createRegistry(extra);
 }
 
 async function loadDocument(path: string | undefined): Promise<AnalysisDocument> {
   if (!path) return defaultTemplate();
+  const builtin = existsSync(path) ? undefined : findTemplate(path);
+  if (builtin) return builtin.make();
+  if (!existsSync(path)) {
+    throw new UsageError(`"${path}" is neither a file nor a built-in template (${builtinTemplates.map((t) => t.id).join(', ')})`);
+  }
   const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
   assertDocument(parsed);
   return parsed;
@@ -85,6 +107,8 @@ async function loadDocument(path: string | undefined): Promise<AnalysisDocument>
 function describe(doc: AnalysisDocument, registry: ModuleRegistry): string {
   const lines: string[] = [];
   if (doc.template?.description) lines.push(doc.template.description, '');
+  const needs = doc.kind === 'template' ? templateRequirements(doc) : [];
+  if (needs.length > 0) lines.push('Expects of the data', ...needs.map((n) => `  ${n}`), '');
   let group = '';
   for (const setting of listSettings(doc, registry)) {
     if (setting.group !== group) {
@@ -129,8 +153,24 @@ async function addTaxonSet(doc: AnalysisDocument, option: string, text: string, 
     keys = taxa.filter((t) => regex.test(t.label)).map((t) => t.key);
   }
   if (keys.length === 0) throw new UsageError(`${option}: no taxa match "${pattern}"`);
-  doc.taxonSets = [...(doc.taxonSets ?? []).filter((s) => s.name !== name)];
-  doc.taxonSets.push({ id: `taxonset-${name}`, name, taxa: keys, ...(monophyletic ? { monophyletic: true } : {}) });
+  // a set the template already names keeps its id, so that settings referring to it still do
+  const existing = (doc.taxonSets ??= []).find((s) => s.name === name);
+  if (existing) {
+    existing.taxa = keys;
+    if (monophyletic) existing.monophyletic = true;
+  } else {
+    doc.taxonSets.push({ id: `taxonset-${name}`, name, taxa: keys, ...(monophyletic ? { monophyletic: true } : {}) });
+  }
+}
+
+/** Apply `path=value` settings in order; returns the paths that were set. */
+function applySettings(doc: AnalysisDocument, registry: ModuleRegistry, assignments: string[]): string[] {
+  return assignments.map((assignment) => {
+    const eq = assignment.indexOf('=');
+    if (eq < 1) throw new UsageError(`--set expects path=value, got "${assignment}"`);
+    setSetting(doc, registry, assignment.slice(0, eq), assignment.slice(eq + 1));
+    return assignment.slice(0, eq);
+  });
 }
 
 function addTraitOption(doc: AnalysisDocument, option: string, text: string, type: TraitType): void {
@@ -185,6 +225,8 @@ async function main(argv: string[]): Promise<number> {
       'date-delimiter': { type: 'string' },
       'no-dates': { type: 'boolean' },
       module: { type: 'string', short: 'm', multiple: true },
+      ask: { type: 'string', multiple: true },
+      description: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
     },
@@ -209,8 +251,32 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  if (command === 'templates') {
+    for (const template of builtinTemplates) {
+      console.log(`${template.id.padEnd(28)} ${template.title}`);
+      console.log(`${' '.repeat(28)} ${template.make().template?.description ?? ''}`);
+    }
+    return 0;
+  }
+
+  if (command === 'template') {
+    if (!positionals[1]) throw new UsageError('template needs a project file');
+    const project = await loadDocument(positionals[1]);
+    for (const path of values.ask ?? []) {
+      if (!settingField(project, registry, path)) throw new UsageError(`--ask: unknown setting "${path}" (see "describe")`);
+    }
+    const template = makeTemplate(project, { description: values.description, ask: values.ask });
+    if (values.name) template.name = values.name;
+    const output = values.output ?? `${project.name}.template.json`;
+    await writeFile(output, `${JSON.stringify(template, null, 1)}\n`);
+    console.error(`Wrote ${output}: asks for ${template.template?.ask.join(', ') || 'nothing'}`);
+    return 0;
+  }
+
   if (command === 'describe') {
-    console.log(describe(await loadDocument(positionals[1] ?? values.template), registry));
+    const doc = await loadDocument(positionals[1] ?? values.template);
+    applySettings(doc, registry, values.set ?? []);
+    console.log(describe(doc, registry));
     return 0;
   }
 
@@ -233,11 +299,11 @@ async function main(argv: string[]): Promise<number> {
     throw new UsageError('No sequence data: give at least one --data file');
   }
 
-  for (const [i, path] of (values.metadata ?? []).entries()) {
+  for (const path of values.metadata ?? []) {
     const content = await readFile(path, 'utf8');
     if (!looksLikeTable(content)) throw new UsageError(`${path} is not a CSV or TSV table`);
     const tables = (doc.data.tables ??= []);
-    let n = tables.length + i + 1;
+    let n = tables.length + 1;
     while (tables.some((t) => t.id === `table-${n}`)) n++;
     tables.push(parseTable(content, `table-${n}`, basename(path, extname(path))));
   }
@@ -272,13 +338,7 @@ async function main(argv: string[]): Promise<number> {
   for (const text of values['continuous-trait'] ?? []) addTraitOption(doc, '--continuous-trait', text, 'continuous');
 
   if (values.name) setSetting(doc, registry, 'name', values.name);
-  const given = new Set<string>(values.name ? ['name'] : []);
-  for (const assignment of values.set ?? []) {
-    const eq = assignment.indexOf('=');
-    if (eq < 1) throw new UsageError(`--set expects path=value, got "${assignment}"`);
-    setSetting(doc, registry, assignment.slice(0, eq), assignment.slice(eq + 1));
-    given.add(assignment.slice(0, eq));
-  }
+  const given = new Set<string>([...(values.name ? ['name'] : []), ...applySettings(doc, registry, values.set ?? [])]);
 
   const unanswered = (values.template && fastaPaths.length > 0 ? (doc.template?.ask ?? []) : []).filter((path) => !given.has(path));
   if (unanswered.length > 0) {

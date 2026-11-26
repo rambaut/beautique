@@ -30,6 +30,7 @@ test('import a FASTA file, adjust settings and download the XML', async ({ page 
   const problems = watchConsole(page);
 
   await page.goto('/');
+  await go(page, 'Data');
   await expect(page.getByRole('heading', { name: 'Data', level: 1 })).toBeVisible();
   await expect(page.getByLabel('XML preview').getByText('No sequence data has been loaded')).toBeVisible();
 
@@ -76,6 +77,7 @@ test('partition, choose models, edit priors and operators, then save and reopen 
   const main = page.getByRole('main');
 
   await page.goto('/');
+  await go(page, 'Data');
   await page.locator('.dropzone input[type=file]').setInputFiles(FASTA);
   await expect(page.getByText('71 taxa in total')).toBeVisible();
 
@@ -140,7 +142,7 @@ test('partition, choose models, edit priors and operators, then save and reopen 
   // a reopened project gives exactly the same analysis, in the app and from the CLI
   await page.getByRole('button', { name: 'New', exact: true }).click();
   await expect(preview).toHaveCount(0);
-  await page.locator('label.button input[type=file]').setInputFiles(project);
+  await page.locator('header input[type=file]').setInputFiles(project);
   await expect(page.locator('.doc-name')).toHaveText('YFV_full');
   await go(page, 'Partitions');
   await expect(main.getByRole('row', { name: /^CP3/ })).toContainText('218');
@@ -170,6 +172,7 @@ test('design taxon sets and a timeline, and use them in a local clock and a birt
   };
 
   await page.goto('/');
+  await go(page, 'Data');
   await page.locator('.dropzone input[type=file]').setInputFiles(FASTA);
   await expect(page.getByText('71 taxa in total')).toBeVisible();
 
