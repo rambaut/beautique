@@ -20,12 +20,38 @@ export interface SequenceRecord {
   sequence: string;
 }
 
+/** A set of alignment columns, as in BEAST's `<patterns from to every>`. Positions are 1-based. */
+export interface SiteRange {
+  from?: number;
+  to?: number;
+  every?: number;
+}
+
+export interface CharSet {
+  name: string;
+  ranges: SiteRange[];
+}
+
+/** Number of sites selected by the ranges (all sites when there are none). */
+export function countSites(ranges: SiteRange[] | undefined, nchar: number): number {
+  if (!ranges || ranges.length === 0) return nchar;
+  let count = 0;
+  for (const range of ranges) {
+    const from = range.from ?? 1;
+    const to = Math.min(range.to ?? nchar, nchar);
+    if (to >= from) count += Math.floor((to - from) / (range.every ?? 1)) + 1;
+  }
+  return count;
+}
+
 export interface AlignmentData {
   id: string;
   name: string;
   dataType: 'nucleotide';
   labelRule: LabelRule;
   sequences: SequenceRecord[];
+  /** Named site sets from the source file (NEXUS charsets); each becomes a partition. */
+  charsets?: CharSet[];
 }
 
 export interface DateSpec {

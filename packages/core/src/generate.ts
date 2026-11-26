@@ -4,8 +4,8 @@
  * assembles the BEAST XML in canonical block order.
  */
 
-import { deriveTaxa, taxonKey, type Taxon } from './data';
-import { findInstance, mcmcSchema, type AnalysisDocument, type McmcSettings, type ModelInstance } from './document';
+import { countSites, deriveTaxa, taxonKey, type SiteRange, type Taxon } from './data';
+import { findInstance, mcmcSchema, type AnalysisDocument, type McmcSettings, type Partition } from './document';
 import {
   MODULE_API_VERSION,
   TOP_LEVEL_SECTIONS,
@@ -20,27 +20,36 @@ import {
   type Section,
   type Slot,
 } from './module-api';
+import { priorElement, validatePrior } from './priors';
 import type { ModuleRegistry } from './registry';
 import { resolveOptions, validateOptions, type OptionValues } from './schema';
 import { comment, el, formatNumbers, ref, serialize, type XmlElement, type XmlNode } from './xml';
 
-export const BEAUTIQUE_VERSION = '0.1.0';
+export const BEAUTIQUE_VERSION = '0.2.0';
 /** The BEAST X version written to the `<beast version>` attribute. */
 export const BEAST_XML_VERSION = '10.6.0';
 
 export interface ResolvedParameter {
+  /** XML id. */
   id: string;
+  /** Stable key for user overrides: `<owner>/<declared name>`. */
+  key: string;
   /** Id of the model instance that declared it. */
   owner: string;
+  /** Label of the model that declared it. */
+  ownerLabel: string;
   decl: ParameterDecl;
   value?: number | number[];
   prior?: PriorSpec;
 }
 
 export interface ResolvedOperator {
-  /** Instance prefix + local key; the key for user overrides. */
+  /** Stable key for user overrides: `<owner>/<declared key>`. */
   key: string;
   owner: string;
+  ownerLabel: string;
+  /** What the operator is and what it acts on. */
+  label: string;
   decl: OperatorDecl;
   weight: number;
   tuning?: number;
@@ -62,42 +71,56 @@ export interface GenerateResult {
 }
 
 interface Entry {
-  instance: ModelInstance;
-  module: ModuleDefinition;
+  /** Instance id, or a synthetic id for blocks the pipeline itself adds. */
+  owner: string;
+  label: string;
+  slot: Slot | 'relativeRates';
   prefix: string;
-  options: OptionValues;
-  ctx: ModuleContext;
+  module?: ModuleDefinition;
+  ctx?: ModuleContext;
   params: ResolvedParameter[];
   operators: ResolvedOperator[];
   contributions: Contributions;
 }
 
+interface SiteModel {
+  id: string;
+  substitution: string;
+  heterogeneity: string | null;
+  /** Prefix of the substitution model, shared by the site model's own ids. */
+  prefix: string;
+  /** Number of alignment columns across the partitions that use it. */
+  sites: number;
+  clocks: Set<string>;
+  /** Children the pipeline adds (the relative rate). */
+  extra: XmlNode[];
+}
+
 /** Order in which instances contribute priors, operators and log entries. */
-const ENTRY_ORDER: Slot[] = ['substitution', 'siteHeterogeneity', 'clock', 'tree', 'startingTree', 'treePrior'];
+const ENTRY_ORDER: Entry['slot'][] = [
+  'substitution',
+  'siteHeterogeneity',
+  'relativeRates',
+  'clock',
+  'tree',
+  'startingTree',
+  'treePrior',
+];
 
 function safeId(name: string): string {
   return name.trim().replace(/\s+/g, '_');
 }
 
-function priorElement(prior: PriorSpec, parameter: XmlElement, treeModel: () => XmlElement): XmlElement {
-  switch (prior.type) {
-    case 'logNormal':
-      return el('logNormalPrior', { mu: prior.mu, sigma: prior.sigma, offset: prior.offset ?? 0 }, [parameter]);
-    case 'normal':
-      return el('normalPrior', { mean: prior.mean, stdev: prior.stdev }, [parameter]);
-    case 'gamma':
-      return el('gammaPrior', { shape: prior.shape, scale: prior.scale, offset: prior.offset ?? 0 }, [parameter]);
-    case 'exponential':
-      return el('exponentialPrior', { mean: prior.mean, offset: prior.offset ?? 0 }, [parameter]);
-    case 'uniform':
-      return el('uniformPrior', { lower: prior.lower, upper: prior.upper }, [parameter]);
-    case 'dirichlet':
-      return el('dirichletPrior', { alpha: prior.alpha, sumsTo: prior.sumsTo }, [parameter]);
-    case 'ctmcScale':
-      return el('ctmcScalePrior', {}, [el('ctmcScale', {}, [parameter]), treeModel()]);
-    case 'oneOnX':
-      return el('oneOnXPrior', {}, [parameter]);
-  }
+function describeOperator(decl: OperatorDecl, owner: Entry): string {
+  if (decl.label) return decl.label;
+  const target = decl.key.replace(/\.[^.]+$/, '');
+  return `${decl.element.replace(/Operator$/, '')}(${owner.prefix}${target})`;
+}
+
+function patternsElement(id: string | undefined, range: SiteRange, alignment: string): XmlElement {
+  return el('patterns', { id, from: range.from ?? 1, to: range.to, every: range.every, strip: false }, [
+    ref('alignment', alignment),
+  ]);
 }
 
 export function generate(doc: AnalysisDocument, registry: ModuleRegistry, options: GenerateOptions = {}): GenerateResult {
@@ -112,7 +135,8 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
   const taxa = derived.taxa;
   const result: GenerateResult = { issues, taxa, parameters: [], operators: [] };
 
-  if (doc.data.alignments.length === 0) error('No sequence data has been loaded');
+  const hasData = doc.data.alignments.length > 0;
+  if (!hasData) error('No sequence data has been loaded');
 
   const dated = taxa.length > 0 && taxa.every((t) => t.date !== undefined);
   const data: DataSummary = { ntax: taxa.length, hasDates: dated };
@@ -122,23 +146,40 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
   }
 
   const alignmentIds = new Map<string, string>();
+  const nchar = new Map<string, number>();
   for (const alignment of doc.data.alignments) {
     alignmentIds.set(
       alignment.id,
       doc.data.alignments.length === 1 ? 'alignment' : `${safeId(alignment.name)}.alignment`,
     );
+    nchar.set(alignment.id, alignment.sequences[0]?.sequence.length ?? 0);
   }
   if (new Set(alignmentIds.values()).size !== alignmentIds.size) error('Alignment names must be unique');
 
   if (doc.partitions.length === 0) error('The analysis has no data partitions');
+  const siteCount = (partition: Partition): number =>
+    countSites(partition.sites, nchar.get(partition.alignment ?? '') ?? 0);
   for (const partition of doc.partitions) {
-    if (partition.alignment === null || !alignmentIds.has(partition.alignment)) {
+    if (!hasData) break;
+    const length = nchar.get(partition.alignment ?? '');
+    if (length === undefined) {
       error(`Partition "${partition.name}" is not linked to any sequence data`);
+      continue;
     }
+    for (const range of partition.sites ?? []) {
+      const from = range.from ?? 1;
+      const to = range.to ?? length;
+      const every = range.every ?? 1;
+      if (![from, to, every].every(Number.isInteger) || from < 1 || every < 1 || to < from || to > length) {
+        error(`Partition "${partition.name}" has a site range outside its alignment (1 to ${length})`);
+      }
+    }
+    if (siteCount(partition) === 0) error(`Partition "${partition.name}" contains no sites`);
   }
   const multiPartition = doc.partitions.length > 1;
-  const patternsId = (name: string): string => (multiPartition ? `${safeId(name)}.patterns` : 'patterns');
-  if (new Set(doc.partitions.map((p) => patternsId(p.name))).size !== doc.partitions.length) {
+  const patternsId = (partition: Partition): string =>
+    multiPartition ? `${safeId(partition.name)}.patterns` : 'patterns';
+  if (new Set(doc.partitions.map(patternsId)).size !== doc.partitions.length) {
     error('Partition names must be unique');
   }
 
@@ -162,7 +203,6 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
   want(doc.tree.tree, 'tree');
   want(doc.tree.startingTree, 'startingTree');
   want(doc.tree.treePrior, 'treePrior');
-  wanted.sort((a, b) => ENTRY_ORDER.indexOf(a.slot) - ENTRY_ORDER.indexOf(b.slot));
 
   const published = new Map<string, { owner: string; element: XmlElement }[]>();
   const lookup = (name: string, owner?: string): XmlElement => {
@@ -170,6 +210,60 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
     if (providers.length === 0) throw new Error(`no model in the analysis provides "${name}"`);
     if (providers.length > 1) throw new Error(`more than one model provides "${name}"`);
     return providers[0].element;
+  };
+
+  /** Apply user overrides to declared parameters and operators, and check the results. */
+  const resolveParams = (entry: Entry, decls: ParameterDecl[]): void => {
+    entry.params = decls.map((decl) => {
+      const key = `${entry.owner}/${decl.name}`;
+      const override = doc.parameters[key] ?? {};
+      const parameter: ResolvedParameter = {
+        id: entry.prefix + decl.name,
+        key,
+        owner: entry.owner,
+        ownerLabel: entry.label,
+        decl,
+        value: override.value ?? decl.value,
+        prior: decl.prior ? (override.prior ?? decl.prior) : undefined,
+      };
+      const path = `parameters.${key}`;
+      const message = parameter.prior ? validatePrior(parameter.prior) : null;
+      if (message) error(`${parameter.id}: ${message}`, path);
+      for (const v of [parameter.value ?? []].flat()) {
+        if (!Number.isFinite(v)) error(`${parameter.id}: the initial value must be a number`, path);
+        else if ((decl.lower !== undefined && v < decl.lower) || (decl.upper !== undefined && v > decl.upper)) {
+          error(
+            `${parameter.id}: the initial value ${v} is outside its bounds (${decl.lower ?? '-∞'} to ${decl.upper ?? '∞'})`,
+            path,
+          );
+        }
+      }
+      return parameter;
+    });
+  };
+  const resolveOperators = (entry: Entry, decls: OperatorDecl[]): void => {
+    entry.operators = decls.map((decl) => {
+      const key = `${entry.owner}/${decl.key}`;
+      const override = doc.operators[key] ?? {};
+      const operator: ResolvedOperator = {
+        key,
+        owner: entry.owner,
+        ownerLabel: entry.label,
+        label: describeOperator(decl, entry),
+        decl,
+        weight: override.weight ?? decl.weight,
+        tuning: decl.tuning ? (override.tuning ?? decl.tuning.value) : undefined,
+        disabled: override.disabled ?? false,
+      };
+      const path = `operators.${key}`;
+      if (!Number.isFinite(operator.weight) || operator.weight <= 0) {
+        error(`${operator.label}: the weight must be greater than 0`, path);
+      }
+      if (operator.tuning !== undefined && !Number.isFinite(operator.tuning)) {
+        error(`${operator.label}: the ${decl.tuning?.name} must be a number`, path);
+      }
+      return operator;
+    });
   };
 
   const entries: Entry[] = [];
@@ -181,7 +275,7 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
     }
     const module = registry.get(instance.module);
     if (!module) {
-      error(`Module "${instance.module}" (used by "${instance.name}") is not available`);
+      error(`The ${slot} module "${instance.module}" is not available`);
       continue;
     }
     if (module.slot !== slot) {
@@ -190,12 +284,13 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
     }
     const inSlot = wanted.filter((w) => w.slot === slot).length;
     const prefix = inSlot > 1 ? `${safeId(instance.name)}.` : '';
+    const label = inSlot > 1 ? `${module.label} (${instance.name})` : module.label;
     const resolved = resolveOptions(module.options ?? {}, instance.options);
     for (const issue of validateOptions(module.options ?? {}, resolved)) {
-      error(`${instance.name}: ${issue.message}`, `models.${instance.id}.${issue.field}`);
+      error(`${label}: ${issue.message}`, `models.${instance.id}.${issue.field}`);
     }
 
-    const entry = { instance, module, prefix, options: resolved, params: [], operators: [], contributions: {} } as unknown as Entry;
+    const entry: Entry = { owner: instance.id, label, slot, prefix, module, params: [], operators: [], contributions: {} };
     const findParam = (name: string): ResolvedParameter => {
       const parameter = entry.params.find((p) => p.decl.name === name);
       if (!parameter) throw new Error(`parameter "${name}" is not declared by this module`);
@@ -208,6 +303,7 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
       prefix,
       data,
       operatorStrategy: mcmc.operatorStrategy,
+      optionPath: (name) => `models.${instance.id}.${name}`,
       id: (local) => prefix + local,
       param: (name) => {
         const p = findParam(name);
@@ -226,86 +322,126 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
     entries.push(entry);
   }
 
-  const prefixes = entries.filter((e) => e.prefix !== '').map((e) => `${e.module.slot}:${e.prefix}`);
+  const prefixes = entries.filter((e) => e.prefix !== '').map((e) => `${e.slot}:${e.prefix}`);
   if (new Set(prefixes).size !== prefixes.length) error('Models of the same kind must have different names');
 
   /** Run one module hook, turning a thrown error into an issue. */
-  const run = <T>(entry: Entry, what: string, fn: () => T, fallback: T): T => {
+  const run = <T>(entry: Entry, what: string, fn: (module: ModuleDefinition, ctx: ModuleContext) => T, fallback: T): T => {
     try {
-      return fn();
+      return fn(entry.module as ModuleDefinition, entry.ctx as ModuleContext);
     } catch (e) {
-      error(`${entry.module.label} (${what}): ${e instanceof Error ? e.message : String(e)}`);
+      error(`${entry.label} (${what}): ${e instanceof Error ? e.message : String(e)}`);
       return fallback;
     }
   };
 
   for (const entry of entries) {
-    const decls = run(entry, 'parameters', () => entry.module.parameters?.(entry.ctx) ?? [], []);
-    entry.params = decls.map((decl) => {
-      const id = entry.prefix + decl.name;
-      const override = doc.parameters[id] ?? {};
-      return {
-        id,
-        owner: entry.instance.id,
-        decl,
-        value: override.value ?? decl.value,
-        prior: override.prior ?? decl.prior,
-      };
-    });
+    resolveParams(entry, run(entry, 'parameters', (m, ctx) => m.parameters?.(ctx) ?? [], []));
   }
   for (const entry of entries) {
-    const refs = run(entry, 'references', () => entry.module.refs?.(entry.ctx) ?? {}, {});
+    const refs = run(entry, 'references', (m, ctx) => m.refs?.(ctx) ?? {}, {});
     for (const [name, element] of Object.entries(refs)) {
       const list = published.get(name) ?? [];
-      list.push({ owner: entry.instance.id, element });
+      list.push({ owner: entry.owner, element });
       published.set(name, list);
     }
   }
   for (const entry of entries) {
-    issues.push(...run(entry, 'validation', () => entry.module.validate?.(entry.ctx) ?? [], []));
-    entry.contributions = run(entry, 'XML', () => entry.module.generate(entry.ctx), {});
-    const decls = run(entry, 'operators', () => entry.module.operators?.(entry.ctx) ?? [], []);
-    entry.operators = decls.map((decl) => {
-      const key = entry.prefix + decl.key;
-      const override = doc.operators[key] ?? {};
-      return {
-        key,
-        owner: entry.instance.id,
-        decl,
-        weight: override.weight ?? decl.weight,
-        tuning: override.tuning ?? decl.tuning?.value,
-        disabled: override.disabled ?? false,
-      };
-    });
+    issues.push(...run(entry, 'validation', (m, ctx) => m.validate?.(ctx) ?? [], []));
+    entry.contributions = run(entry, 'XML', (m, ctx) => m.generate(ctx), {});
+    resolveOperators(entry, run(entry, 'operators', (m, ctx) => m.operators?.(ctx) ?? [], []));
   }
+
+  // ---- site models and relative rates --------------------------------------
+  // Each site model pairs one substitution model with one heterogeneity model.
+  const entryOf = (id: string | null): Entry | undefined => entries.find((e) => e.owner === id);
+  const siteModels: SiteModel[] = [];
+  for (const partition of doc.partitions) {
+    let siteModel = siteModels.find((s) => s.substitution === partition.substitution);
+    if (siteModel && siteModel.heterogeneity !== partition.siteHeterogeneity) {
+      error('Partitions that share a substitution model must share the same among-site rate heterogeneity model');
+      continue;
+    }
+    if (!siteModel) {
+      if (siteModels.some((s) => s.heterogeneity !== null && s.heterogeneity === partition.siteHeterogeneity)) {
+        error('An among-site rate heterogeneity model cannot be shared between different substitution models');
+      }
+      const prefix = entryOf(partition.substitution)?.prefix ?? '';
+      siteModel = {
+        id: `${prefix}siteModel`,
+        substitution: partition.substitution,
+        heterogeneity: partition.siteHeterogeneity,
+        prefix,
+        sites: 0,
+        clocks: new Set(),
+        extra: [],
+      };
+      siteModels.push(siteModel);
+    }
+    siteModel.sites += siteCount(partition);
+    siteModel.clocks.add(partition.clock);
+  }
+
+  // Site models under the same clock get relative rates whose weighted mean is one.
+  const afterSiteModels: XmlNode[] = [];
+  for (const clock of entries.filter((e) => e.slot === 'clock')) {
+    const group = siteModels.filter((s) => s.clocks.has(clock.owner));
+    if (group.length < 2) continue;
+    if (group.some((s) => s.clocks.size > 1)) {
+      error('Partitions that share a substitution model must also share a clock model');
+      continue;
+    }
+    const total = group.reduce((sum, s) => sum + s.sites, 0);
+    const allNus = `${clock.prefix}allNus`;
+    for (const siteModel of group) {
+      siteModel.extra.push(
+        el('relativeRate', { weight: total / siteModel.sites }, [
+          el('parameter', { id: `${siteModel.prefix}nu`, value: 1 / group.length, lower: 0, upper: 1 }),
+        ]),
+      );
+      afterSiteModels.push(
+        el('statistic', { id: `${siteModel.prefix}mu`, name: 'mu' }, [ref('siteModel', siteModel.id)]),
+      );
+    }
+    afterSiteModels.push(
+      comment('Collecting together relative rates for partitions'),
+      el('compoundParameter', { id: allNus }, group.map((s) => ref('parameter', `${s.prefix}nu`))),
+    );
+    const entry: Entry = {
+      owner: `relativeRates:${clock.owner}`,
+      label: 'Relative rates of partitions',
+      slot: 'relativeRates',
+      prefix: clock.prefix,
+      params: [],
+      operators: [],
+      contributions: { fileLog: group.map((s) => ref('statistic', `${s.prefix}mu`)) },
+    };
+    resolveParams(entry, [
+      {
+        name: 'allNus',
+        description: 'Relative rates of the partitions (as shares of the total)',
+        prior: { type: 'dirichlet', alpha: 1, sumsTo: 1 },
+      },
+    ]);
+    resolveOperators(entry, [
+      {
+        key: 'allNus.deltaExchange',
+        element: 'deltaExchange',
+        tuning: { name: 'delta', value: 0.01 },
+        weight: 3,
+        children: [ref('parameter', allNus)],
+      },
+    ]);
+    entries.push(entry);
+  }
+
+  entries.sort((a, b) => ENTRY_ORDER.indexOf(a.slot) - ENTRY_ORDER.indexOf(b.slot));
   result.parameters = entries.flatMap((e) => e.params);
   result.operators = entries.flatMap((e) => e.operators);
 
   const parameterIds = result.parameters.map((p) => p.id);
   for (const id of new Set(parameterIds.filter((p, i) => parameterIds.indexOf(p) !== i))) {
     error(`Parameter id "${id}" is declared by more than one model`);
-  }
-
-  // Each site model pairs one substitution model with one heterogeneity model.
-  const entryOf = (id: string | null): Entry | undefined => entries.find((e) => e.instance.id === id);
-  const siteModels: { substitution: string; heterogeneity: string | null; id: string }[] = [];
-  for (const partition of doc.partitions) {
-    const existing = siteModels.find((s) => s.substitution === partition.substitution);
-    if (existing && existing.heterogeneity !== partition.siteHeterogeneity) {
-      error('Partitions that share a substitution model must share the same among-site rate heterogeneity model');
-    } else if (!existing) {
-      const shared = siteModels.some(
-        (s) => s.heterogeneity !== null && s.heterogeneity === partition.siteHeterogeneity,
-      );
-      if (shared) {
-        error('An among-site rate heterogeneity model cannot be shared between different substitution models');
-      }
-      siteModels.push({
-        substitution: partition.substitution,
-        heterogeneity: partition.siteHeterogeneity,
-        id: `${entryOf(partition.substitution)?.prefix ?? ''}siteModel`,
-      });
-    }
   }
 
   if (issues.some((i) => i.severity === 'error')) return result;
@@ -334,29 +470,36 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
     );
 
     for (const alignment of doc.data.alignments) {
-      const nchar = alignment.sequences[0]?.sequence.length ?? 0;
+      const length = nchar.get(alignment.id) as number;
       const byKey = new Map(alignment.sequences.map((s) => [taxonKey(s.label, alignment.labelRule), s.sequence]));
       top.push(
-        comment(`Sequence alignment "${alignment.name}". ntax=${alignment.sequences.length} nchar=${nchar}`),
+        comment(`Sequence alignment "${alignment.name}". ntax=${alignment.sequences.length} nchar=${length}`),
         el(
           'alignment',
           { id: alignmentIds.get(alignment.id), dataType: alignment.dataType },
           taxa.map((t) =>
             el('sequence', {}, [
               ref('taxon', t.id),
-              options.elideSequences ? `[${nchar} sites]` : (byKey.get(t.key) ?? '?'.repeat(nchar)),
+              options.elideSequences ? `[${length} sites]` : (byKey.get(t.key) ?? '?'.repeat(length)),
             ]),
           ),
         ),
       );
     }
 
+    // A partition's patterns: one <patterns>, or <mergePatterns> over several site ranges.
+    const patternsRef = new Map<string, XmlElement>();
     for (const partition of doc.partitions) {
-      top.push(
-        el('patterns', { id: patternsId(partition.name), from: 1, strip: false }, [
-          ref('alignment', alignmentIds.get(partition.alignment as string) as string),
-        ]),
-      );
+      const id = patternsId(partition);
+      const alignment = alignmentIds.get(partition.alignment as string) as string;
+      const ranges = partition.sites && partition.sites.length > 0 ? partition.sites : [{}];
+      if (ranges.length === 1) {
+        top.push(patternsElement(id, ranges[0], alignment));
+        patternsRef.set(partition.id, ref('patterns', id));
+      } else {
+        top.push(el('mergePatterns', { id }, ranges.map((r) => patternsElement(undefined, r, alignment))));
+        patternsRef.set(partition.id, ref('mergePatterns', id));
+      }
     }
 
     for (const name of TOP_LEVEL_SECTIONS) top.push(...section(name));
@@ -366,29 +509,30 @@ export function generate(doc: AnalysisDocument, registry: ModuleRegistry, option
       top.push(
         el('siteModel', { id: siteModel.id }, [
           el('substitutionModel', {}, [lookup('substitutionModel', siteModel.substitution)]),
+          siteModel.extra,
           heterogeneity ? section('siteModel', heterogeneity) : [],
         ]),
       );
     }
+    top.push(...afterSiteModels);
 
     // One tree likelihood per clock model, with a <partition> for each data partition.
-    const clocks = entries.filter((e) => e.module.slot === 'clock');
     const likelihoods: XmlElement[] = [];
-    for (const clock of clocks) {
+    for (const clock of entries.filter((e) => e.slot === 'clock')) {
       const id = `${clock.prefix}treeLikelihood`;
       top.push(
         comment('Likelihood for tree given sequence data'),
         el('treeDataLikelihood', { id, useAmbiguities: false, usePreOrder: false }, [
           doc.partitions
-            .filter((p) => p.clock === clock.instance.id)
+            .filter((p) => p.clock === clock.owner)
             .map((p) =>
               el('partition', {}, [
-                ref('patterns', patternsId(p.name)),
+                patternsRef.get(p.id),
                 ref('siteModel', siteModels.find((s) => s.substitution === p.substitution)!.id),
               ]),
             ),
           treeModel(),
-          lookup('branchRates', clock.instance.id),
+          lookup('branchRates', clock.owner),
         ]),
       );
       likelihoods.push(ref('treeDataLikelihood', id));

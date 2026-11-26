@@ -2,11 +2,13 @@
  * Settings addressed by path, as used by templates ("ask" lists), the CLI
  * (`--set path=value`) and the app's template mode.
  *
- * Paths: `name`, `mcmc.<setting>`, `models.<instanceId>.<option>`.
+ * Paths: `name`, `mcmc.<setting>`, `models.<instanceId>.<option>`, and
+ * `models.<instanceId>.module` to choose which module an instance uses.
  */
 
 import { mcmcSchema, type AnalysisDocument } from './document';
-import { SLOT_LABELS } from './module-api';
+import { SLOT_LABELS, type Slot } from './module-api';
+import { setInstanceModule } from './partitions';
 import type { ModuleRegistry } from './registry';
 import { coerceValue, isVisible, resolveOptions, validateField, type FieldSchema } from './schema';
 
@@ -31,6 +33,14 @@ const nameField: FieldSchema = {
   pattern: '[^\\s/\\\\]+',
 };
 
+function moduleField(registry: ModuleRegistry, slot: Slot): FieldSchema {
+  return {
+    type: 'choice',
+    label: SLOT_LABELS[slot],
+    choices: registry.bySlot(slot).map((m) => ({ value: m.id, label: m.label })),
+  };
+}
+
 /** All settings of a document that are currently applicable. */
 export function listSettings(doc: AnalysisDocument, registry: ModuleRegistry): SettingInfo[] {
   const ask = new Set(doc.template?.ask ?? []);
@@ -47,6 +57,15 @@ export function listSettings(doc: AnalysisDocument, registry: ModuleRegistry): S
   for (const instance of doc.components) {
     if (!used.has(instance.id)) continue;
     const module = registry.get(instance.module);
+    const modulePath = `models.${instance.id}.module`;
+    settings.push({
+      path: modulePath,
+      group: `${SLOT_LABELS[instance.slot]}: ${module?.label ?? instance.module}`,
+      field: moduleField(registry, instance.slot),
+      value: instance.module,
+      explicit: true,
+      ask: ask.has(modulePath),
+    });
     if (!module?.options) continue;
     const resolved = resolveOptions(module.options, instance.options);
     for (const [key, field] of Object.entries(module.options)) {
@@ -102,6 +121,10 @@ export function setSetting(doc: AnalysisDocument, registry: ModuleRegistry, path
     assign = (v) => {
       (doc.mcmc as Record<string, unknown>)[rest[0]] = v;
     };
+  } else if (head === 'models' && rest.length === 2 && rest[1] === 'module') {
+    const instance = doc.components.find((c) => c.id === rest[0]);
+    field = instance && moduleField(registry, instance.slot);
+    assign = (v) => setInstanceModule(doc, rest[0], v as string);
   } else if (head === 'models' && rest.length === 2) {
     const instance = doc.components.find((c) => c.id === rest[0]);
     field = instance && registry.get(instance.module)?.options?.[rest[1]];

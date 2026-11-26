@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { deriveTaxa, detectDateSpec, detectLabelRule, parseDate, taxonKey, type AlignmentData } from '../src/data';
-import { alignmentFromFasta, parseFasta } from '../src/fasta';
+import { countSites } from '../src/data';
+import { alignmentFromFasta, alignmentFromText, parseFasta } from '../src/fasta';
+import { parseNexus } from '../src/nexus';
+import { defaultPrior, describePrior, validatePrior } from '../src/priors';
 
 describe('dates', () => {
   it('parses the supported date forms to decimal years', () => {
@@ -96,5 +99,89 @@ describe('fasta', () => {
     expect(() => alignmentFromFasta('>a\nACGT\n>b\nACG\n', 'x', 'test')).toThrow(/not aligned/);
     expect(() => parseFasta('ACGT\n')).toThrow(/Not a FASTA file/);
     expect(() => parseFasta('')).toThrow(/No sequences/);
+  });
+});
+
+describe('nexus', () => {
+  it('parses sequential and interleaved matrices, quoted labels and comments', () => {
+    const sequential = `#NEXUS
+[a comment; with a semicolon]
+BEGIN DATA;
+  DIMENSIONS NTAX=2 NCHAR=8;
+  FORMAT DATATYPE=DNA MISSING=? GAP=-;
+  MATRIX
+    'virus A|2001'  ACGT
+                    ACGT
+    virusB          ACG- [inline] AC?T
+  ;
+END;`;
+    expect(parseNexus(sequential).sequences).toEqual([
+      { label: 'virus A|2001', sequence: 'ACGTACGT' },
+      { label: 'virusB', sequence: 'ACG-AC?T' },
+    ]);
+
+    const interleaved = `#nexus
+begin characters;
+  dimensions nchar=8;
+  format datatype=nucleotide interleave matchchar=.;
+  matrix
+    a ACGT
+    b ...A
+
+    a TTTT
+    b .C..
+  ;
+end;`;
+    expect(parseNexus(interleaved).sequences).toEqual([
+      { label: 'a', sequence: 'ACGTTTTT' },
+      { label: 'b', sequence: 'ACGATCTT' },
+    ]);
+  });
+
+  it('reads charsets with ranges, steps and open ends', () => {
+    const { charsets } = parseNexus(`#NEXUS
+begin data; dimensions nchar=4; format datatype=dna; matrix a ACGT b ACGA; end;
+begin assumptions;
+  charset first = 1-3;
+  charset 'third positions' = 3-.\\3;
+  charset mixed = 1-10 20 30-40\\2;
+end;`.replace(/matrix a ACGT b ACGA/, 'matrix\n a ACGT\n b ACGA\n'));
+    expect(charsets).toEqual([
+      { name: 'first', ranges: [{ from: 1, to: 3 }] },
+      { name: 'third positions', ranges: [{ from: 3, every: 3 }] },
+      { name: 'mixed', ranges: [{ from: 1, to: 10 }, { from: 20, to: 20 }, { from: 30, to: 40, every: 2 }] },
+    ]);
+  });
+
+  it('rejects unsupported or malformed files and detects the format', () => {
+    expect(() => parseNexus('>a\nACGT')).toThrow(/does not start with #NEXUS/);
+    expect(() => parseNexus('#NEXUS\nbegin data; format datatype=protein; matrix\n a MKV\n; end;')).toThrow(/Only nucleotide/);
+    expect(() => parseNexus('#NEXUS\nbegin trees; end;')).toThrow(/No sequence matrix/);
+    expect(alignmentFromText('#NEXUS\nbegin data;\nmatrix\n a ACGT\n b ACGA\n;\nend;', 'x', 'n').sequences).toHaveLength(2);
+    expect(alignmentFromText('>a\nACGT\n', 'x', 'f').sequences).toHaveLength(1);
+    expect(() => alignmentFromText('hello', 'x', 'notes')).toThrow(/not a FASTA or NEXUS file/);
+  });
+});
+
+describe('site ranges', () => {
+  it('counts the sites they select', () => {
+    expect(countSites(undefined, 10)).toBe(10);
+    expect(countSites([{ from: 1, every: 3 }, { from: 2, every: 3 }], 12)).toBe(8);
+    expect(countSites([{ from: 3, every: 3 }], 10)).toBe(3);
+    expect(countSites([{ from: 4, to: 6 }], 10)).toBe(3);
+    expect(countSites([{ from: 8, to: 20 }], 10)).toBe(3);
+  });
+});
+
+describe('priors', () => {
+  it('have defaults, descriptions and validation', () => {
+    expect(defaultPrior('gamma')).toEqual({ type: 'gamma', shape: 1, scale: 1, offset: 0 });
+    expect(describePrior({ type: 'logNormal', mu: 1, sigma: 1.25 })).toBe('Lognormal(mu=1, sigma=1.25)');
+    expect(describePrior({ type: 'exponential', mean: 0.5, offset: 2 })).toBe('Exponential(mean=0.5, offset=2)');
+    expect(describePrior({ type: 'ctmcScale' })).toBe('CTMC rate reference');
+    expect(validatePrior({ type: 'gamma', shape: 0, scale: 1 })).toBe('Gamma prior: shape must be greater than 0');
+    expect(validatePrior({ type: 'uniform', lower: 2, upper: 1 })).toBe('Uniform prior: lower must be less than upper');
+    expect(validatePrior({ type: 'normal', mean: Number.NaN, stdev: 1 })).toBe('Normal prior: mean must be a number');
+    expect(validatePrior({ type: 'laplace', mean: 0, scale: 100 })).toBeNull();
   });
 });

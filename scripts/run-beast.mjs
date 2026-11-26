@@ -23,7 +23,7 @@ if (!existsSync(jar)) {
 const classpath = [jar, join(beast, 'lib', '*')].join(delimiter);
 const result = spawnSync(
   'java',
-  ['-Djava.library.path=/usr/local/lib', '-cp', classpath, 'dr.app.beast.BeastMain', '-overwrite', '-working', resolve(xml)],
+  ['-Djava.library.path=/usr/local/lib', '-cp', classpath, 'dr.app.beast.BeastMain', '-overwrite', '-seed', '1234', '-working', resolve(xml)],
   { cwd: mkdtempSync(join(tmpdir(), 'beautique-')), stdio: 'inherit' },
 );
 process.exit(result.status ?? 1);

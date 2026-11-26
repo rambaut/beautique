@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { describePrior } from '@beautique/core';
   import { app } from '../lib/state.svelte';
 
   const result = $derived(app.preview);
@@ -30,32 +31,26 @@
       {#each warnings as issue (issue.message)}<li class="warning">{issue.message}</li>{/each}
     </ul>
   {/if}
-  <button class="primary" disabled={errors.length > 0} onclick={() => app.download()}>
+  <button class="primary" disabled={errors.length > 0} onclick={() => app.downloadXml()}>
     Download {app.doc.name || 'analysis'}.xml
   </button>
 </section>
 
 {#if errors.length === 0}
   <section class="card">
-    <h2>Parameters and priors</h2>
+    <h2>Priors in this analysis</h2>
     <table>
-      <thead><tr><th>Parameter</th><th>Prior</th><th>Initial value</th><th>Description</th></tr></thead>
+      <thead><tr><th>Parameter</th><th>Prior</th><th>Description</th></tr></thead>
       <tbody>
-        {#each priors as p (p.id)}
+        {#each priors as p (p.key)}
           <tr>
             <td class="mono">{p.id}</td>
-            <td>
-              {p.prior?.type}{#if p.prior}
-                ({Object.entries(p.prior)
-                  .filter(([k]) => k !== 'type')
-                  .map(([k, v]) => `${k}=${v}`)
-                  .join(', ')}){/if}
-            </td>
-            <td class="mono">{Array.isArray(p.value) ? p.value.join(' ') : (p.value ?? '')}</td>
+            <td>{p.prior ? describePrior(p.prior) : ''}</td>
             <td>{p.decl.description ?? ''}</td>
           </tr>
         {/each}
       </tbody>
     </table>
+    <p class="help">Change these in the <button class="link" onclick={() => (app.step = 'priors')}>Priors</button> step.</p>
   </section>
 {/if}

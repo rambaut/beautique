@@ -1,12 +1,21 @@
 <script lang="ts">
   import { app, STEPS, type StepId } from './lib/state.svelte';
-  import SlotEditor from './lib/SlotEditor.svelte';
   import DataStep from './steps/DataStep.svelte';
   import DatesStep from './steps/DatesStep.svelte';
   import GenerateStep from './steps/GenerateStep.svelte';
   import McmcStep from './steps/McmcStep.svelte';
+  import ModelSteps from './steps/ModelSteps.svelte';
+  import OperatorsStep from './steps/OperatorsStep.svelte';
+  import PartitionsStep from './steps/PartitionsStep.svelte';
+  import PriorsStep from './steps/PriorsStep.svelte';
 
   let showPreview = $state(true);
+
+  function openProject(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    if (input.files?.length) void app.importFiles(input.files);
+    input.value = '';
+  }
 
   const errors = $derived(app.preview.issues.filter((i) => i.severity === 'error'));
   const badges = $derived.by(() => {
@@ -25,8 +34,13 @@
     <span class="wordmark">BEAUtique</span>
     <span class="doc-name">{app.doc.name}</span>
     <span class="spacer"></span>
+    <button onclick={() => app.reset()}>New</button>
+    <label class="button">
+      Open
+      <input type="file" accept=".json,application/json" onchange={openProject} />
+    </label>
+    <button onclick={() => app.saveProject()}>Save project</button>
     <button onclick={() => (showPreview = !showPreview)} aria-pressed={showPreview}>XML preview</button>
-    <button onclick={() => app.reset()}>New analysis</button>
   </header>
 
   <nav aria-label="Steps">
@@ -48,18 +62,19 @@
 
   <main>
     <h1>{title}</h1>
+    {#if app.importError && app.step !== 'data'}<p class="message" role="alert">{app.importError}</p>{/if}
     {#if app.step === 'data'}
       <DataStep />
     {:else if app.step === 'dates'}
       <DatesStep />
-    {:else if app.step === 'substitution'}
-      <SlotEditor slot="substitution" />
-      <SlotEditor slot="siteHeterogeneity" optional />
-    {:else if app.step === 'clock'}
-      <SlotEditor slot="clock" />
-    {:else if app.step === 'tree'}
-      <SlotEditor slot="treePrior" />
-      <SlotEditor slot="startingTree" />
+    {:else if app.step === 'partitions'}
+      <PartitionsStep />
+    {:else if app.step === 'substitution' || app.step === 'clock' || app.step === 'tree'}
+      <ModelSteps step={app.step} />
+    {:else if app.step === 'priors'}
+      <PriorsStep />
+    {:else if app.step === 'operators'}
+      <OperatorsStep />
     {:else if app.step === 'mcmc'}
       <McmcStep />
     {:else}

@@ -47,9 +47,9 @@
     ondragleave={() => (dragging = false)}
     ondrop={drop}
   >
-    <input type="file" accept=".fasta,.fas,.fa,.fna,.txt" multiple onchange={picked} />
-    <strong>Choose FASTA files</strong> or drop them here
-    <span class="help">Each file is an aligned set of sequences and becomes one partition.</span>
+    <input type="file" accept=".fasta,.fas,.fa,.fna,.nex,.nexus,.nxs,.txt" multiple onchange={picked} />
+    <strong>Choose FASTA or NEXUS files</strong> or drop them here
+    <span class="help">Each file is an aligned set of sequences. Character sets in a NEXUS file become partitions.</span>
   </label>
   {#if app.importError}<p class="message" role="alert">{app.importError}</p>{/if}
 

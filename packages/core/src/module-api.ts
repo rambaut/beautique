@@ -72,6 +72,7 @@ export type PriorSpec =
   | { type: 'normal'; mean: number; stdev: number }
   | { type: 'gamma'; shape: number; scale: number; offset?: number }
   | { type: 'exponential'; mean: number; offset?: number }
+  | { type: 'laplace'; mean: number; scale: number }
   | { type: 'uniform'; lower: number; upper: number }
   | { type: 'dirichlet'; alpha: number; sumsTo: number }
   /** The CTMC rate reference prior (Ferreira & Suchard 2008), conditioned on the tree. */
@@ -134,6 +135,8 @@ export interface ModuleContext {
   prefix: string;
   data: DataSummary;
   operatorStrategy: 'standard' | 'hmc';
+  /** The setting path of one of this module's options, for use in `Issue.path`. */
+  optionPath(name: string): string;
   /** Prefix a local name to form an XML id. */
   id(local: string): string;
   /** The defining `<parameter id=...>` element of a declared parameter. Use once. */

@@ -2,12 +2,17 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   alignmentFromFasta,
+  alignmentFromText,
   bindData,
   defineModule,
   generate,
   listSettings,
   openSettings,
+  linkPartition,
+  setCodonScheme,
   setSetting,
+  setSiteHeterogeneity,
+  unlinkPartition,
   type AnalysisDocument,
 } from '@beautique/core';
 import { builtinModules, createRegistry, defaultTemplate } from '../src/index';
@@ -54,11 +59,15 @@ describe('built-in modules', () => {
   it('are discovered from the module files', () => {
     expect(builtinModules.map((m) => m.id)).toEqual([
       'clock.strict',
+      'clock.uncorrelated',
       'siteHeterogeneity.gamma',
       'startingTree.random',
+      'substitution.gtr',
       'substitution.hky',
       'tree.timeTree',
       'treePrior.constant',
+      'treePrior.exponential',
+      'treePrior.skygrid',
     ]);
   });
 });
@@ -113,9 +122,9 @@ describe('generate', () => {
 
   it('applies user overrides of priors, initial values and operator weights', () => {
     const doc = project();
-    doc.parameters.kappa = { value: 4, prior: { type: 'exponential', mean: 2 } };
-    doc.operators['kappa.scale'] = { weight: 5 };
-    doc.operators.subtreeLeap = { disabled: true };
+    doc.parameters['substitution/kappa'] = { value: 4, prior: { type: 'exponential', mean: 2 } };
+    doc.operators['substitution/kappa.scale'] = { weight: 5 };
+    doc.operators['tree/subtreeLeap'] = { disabled: true };
     const xml = xmlOf(doc);
     expect(xml).toContain('<parameter id="kappa" value="4" lower="0"/>');
     expect(xml).toMatch(/<exponentialPrior mean="2" offset="0">\s*<parameter idref="kappa"\/>/);
@@ -161,9 +170,208 @@ describe('generate', () => {
     expect(result.xml).toBeUndefined();
     expect(result.issues.map((i) => i.message)).toEqual([
       'Chain length must be at least 1',
-      'siteHeterogeneity: Number of rate categories must be at least 2',
-      'Module "clock.missing" (used by "clock") is not available',
+      'Gamma: Number of rate categories must be at least 2',
+      'The clock module "clock.missing" is not available',
     ]);
+  });
+});
+
+describe('overrides', () => {
+  it('rejects invalid priors, initial values and operator weights', () => {
+    const doc = project();
+    doc.parameters['substitution/kappa'] = { value: -1, prior: { type: 'logNormal', mu: 1, sigma: 0 } };
+    doc.operators['substitution/kappa.scale'] = { weight: 0 };
+    const result = generate(doc, registry);
+    expect(result.xml).toBeUndefined();
+    expect(result.issues.map((i) => [i.path, i.message])).toEqual([
+      ['parameters.substitution/kappa', 'kappa: Lognormal prior: sigma must be greater than 0'],
+      ['parameters.substitution/kappa', 'kappa: the initial value -1 is outside its bounds (0 to ∞)'],
+      ['operators.substitution/kappa.scale', 'scale(kappa): the weight must be greater than 0'],
+    ]);
+  });
+
+  it('keep applying when partitioning changes the XML ids', () => {
+    const doc = project();
+    doc.parameters['substitution/kappa'] = { value: 7 };
+    setCodonScheme(doc, doc.data.alignments[0], '12+3');
+    expect(xmlOf(doc)).toContain('<parameter id="CP1+2.kappa" value="7" lower="0"/>');
+  });
+});
+
+describe('models', () => {
+  const withModule = (id: string, module: string, options: Record<string, unknown> = {}): AnalysisDocument => {
+    const doc = project();
+    setSetting(doc, registry, `models.${id}.module`, module);
+    Object.assign(doc.components.find((c) => c.id === id)!.options, options);
+    return doc;
+  };
+
+  it('GTR', () => {
+    const xml = xmlOf(withModule('substitution', 'substitution.gtr'));
+    checkReferences(xml);
+    expect(xml).toContain('<gtrModel id="gtr">');
+    expect(xml).toContain('<parameter id="gtr.rates" dimension="6" value="1" lower="0"/>');
+    expect(xml).toMatch(/<dirichletPrior alpha="1" sumsTo="6">\s*<parameter idref="gtr.rates"\/>/);
+    expect(xml).toContain('<gtrModel idref="gtr"/>');
+    expect(xml).not.toContain('kappa');
+  });
+
+  it('uncorrelated relaxed clocks', () => {
+    const lognormal = xmlOf(withModule('clock', 'clock.uncorrelated'));
+    checkReferences(lognormal);
+    expect(lognormal).toContain('<logNormalDistributionModel meanInRealSpace="true">');
+    expect(lognormal).toContain('<parameter id="ucld.mean" value="0.001" lower="0"/>');
+    expect(lognormal).toMatch(/<ctmcScale>\s*<parameter idref="ucld.mean"\/>/);
+    expect(lognormal).toContain('<swapOperator size="1" autoOptimize="false" weight="10">');
+    expect(lognormal).toContain('<rateStatistic idref="coefficientOfVariation"/>');
+    expect(lognormal).toMatch(/<treeDataLikelihood id="treeLikelihood"[^>]*>[\s\S]*?<discretizedBranchRates idref="branchRates"\/>/);
+
+    const gamma = xmlOf(withModule('clock', 'clock.uncorrelated', { distribution: 'gamma' }));
+    expect(gamma).toContain('<gammaDistributionModel>');
+    expect(gamma).toContain('"ucgd.shape"');
+    const exponential = xmlOf(withModule('clock', 'clock.uncorrelated', { distribution: 'exponential' }));
+    checkReferences(exponential);
+    expect(exponential).toContain('<exponentialDistributionModel>');
+    expect(exponential).not.toMatch(/ucld|ucgd/);
+  });
+
+  it('exponential growth coalescent', () => {
+    const xml = xmlOf(withModule('treePrior', 'treePrior.exponential'));
+    checkReferences(xml);
+    expect(xml).toContain('<exponentialGrowth id="exponential" units="years">');
+    expect(xml).toMatch(/<laplacePrior mean="0" scale="100">\s*<parameter idref="exponential.growthRate"\/>/);
+    expect(xml).toContain('<randomWalkOperator windowSize="1" weight="3">');
+  });
+
+  it('Bayesian skygrid', () => {
+    const xml = xmlOf(withModule('treePrior', 'treePrior.skygrid', { gridPoints: 20 }));
+    checkReferences(xml);
+    expect(xml).toContain('<parameter id="skygrid.logPopSize" dimension="20" value="1"/>');
+    expect(xml).toContain('<parameter id="skygrid.numGridPoints" value="19"/>');
+    // 1.5 times the span of the tip dates (2014-03-01 to 2015-01-20)
+    const cutOff = Number(/id="skygrid.cutOff" value="([^"]+)"/.exec(xml)?.[1]);
+    expect(cutOff).toBeCloseTo(1.5 * (2015 + 19 / 365 - (2014 + 59 / 365)), 10);
+    expect(xml).toContain('<gmrfGridBlockUpdateOperator weight="2">');
+    expect(xmlOf(withModule('treePrior', 'treePrior.skygrid', { cutOff: 5 }))).toContain('id="skygrid.cutOff" value="5"');
+  });
+
+  it('skygrid needs a cut-off when tips are not dated', () => {
+    const doc = project(UNDATED);
+    setSetting(doc, registry, 'models.treePrior.module', 'treePrior.skygrid');
+    const result = generate(doc, registry);
+    expect(result.xml).toBeUndefined();
+    expect(result.issues[0].path).toBe('models.treePrior.cutOff');
+    setSetting(doc, registry, 'models.treePrior.cutOff', '10');
+    expect(generate(doc, registry).xml).toBeDefined();
+  });
+});
+
+describe('partitions', () => {
+  const CODING = '>A|2001\nATGAAACCCGGG\n>B|2002\nATGAAGCCCGGA\n>C|2003\nATGAAGCCAGGA\n';
+  const coding = (): AnalysisDocument => bindData(defaultTemplate(), [alignmentFromFasta(CODING, 'a1', 'gene')]);
+
+  it('splits by codon position with unlinked models and relative rates', () => {
+    const doc = coding();
+    setCodonScheme(doc, doc.data.alignments[0], '12+3');
+    expect(doc.partitions.map((p) => p.name)).toEqual(['CP1+2', 'CP3']);
+    const xml = xmlOf(doc);
+    checkReferences(xml);
+    expect(xml).toMatch(/<mergePatterns id="CP1\+2.patterns">\s*<patterns from="1" every="3" strip="false">[\s\S]*?<patterns from="2" every="3" strip="false">/);
+    expect(xml).toContain('<patterns id="CP3.patterns" from="3" every="3" strip="false">');
+    for (const id of ['CP1+2.hky', 'CP3.hky', 'CP1+2.kappa', 'CP3.alpha', 'CP1+2.siteModel']) {
+      expect(xml).toContain(`id="${id}"`);
+    }
+    // weights are total sites / sites in the partition: 12/8 and 12/4
+    expect(xml).toMatch(/<relativeRate weight="1.5">\s*<parameter id="CP1\+2.nu" value="0.5" lower="0" upper="1"\/>/);
+    expect(xml).toMatch(/<relativeRate weight="3">\s*<parameter id="CP3.nu"/);
+    expect(xml).toMatch(/<compoundParameter id="allNus">\s*<parameter idref="CP1\+2.nu"\/>\s*<parameter idref="CP3.nu"\/>/);
+    expect(xml).toMatch(/<dirichletPrior alpha="1" sumsTo="1">\s*<parameter idref="allNus"\/>/);
+    expect(xml).toContain('<statistic idref="CP3.mu"/>');
+    expect(xml.match(/<treeDataLikelihood id=/g)).toHaveLength(1);
+    expect(xml).toContain('<mergePatterns idref="CP1+2.patterns"/>');
+  });
+
+  it('supports three codon classes and undoing the split', () => {
+    const doc = coding();
+    setCodonScheme(doc, doc.data.alignments[0], '1+2+3');
+    expect(doc.partitions.map((p) => p.name)).toEqual(['CP1', 'CP2', 'CP3']);
+    expect(doc.components.filter((c) => c.slot === 'substitution')).toHaveLength(3);
+    expect(xmlOf(doc)).toContain('<relativeRate weight="3">');
+    setCodonScheme(doc, doc.data.alignments[0], 'none');
+    expect(doc.partitions).toHaveLength(1);
+    expect(doc.components.filter((c) => c.slot === 'substitution')).toHaveLength(1);
+    const xml = xmlOf(doc);
+    expect(xml).toContain('<patterns id="patterns" from="1" strip="false">');
+    expect(xml).not.toContain('relativeRate');
+  });
+
+  it('links and unlinks substitution models and clocks between partitions', () => {
+    const doc = coding();
+    setCodonScheme(doc, doc.data.alignments[0], '12+3');
+    const [first, second] = doc.partitions;
+
+    unlinkPartition(doc, second.id, 'clock');
+    let xml = xmlOf(doc);
+    checkReferences(xml);
+    expect(xml).toContain('<strictClockBranchRates id="CP1+2.branchRates">');
+    expect(xml).toContain('<parameter id="CP3.clock.rate" value="0.001" lower="0"/>');
+    expect(xml.match(/<treeDataLikelihood id=/g)).toHaveLength(2);
+    expect(xml).not.toContain('relativeRate');
+
+    linkPartition(doc, second.id, 'clock', first.clock);
+    linkPartition(doc, second.id, 'substitution', first.substitution);
+    expect(second.siteHeterogeneity).toBe(first.siteHeterogeneity);
+    expect(doc.components.filter((c) => c.slot !== 'tree' && c.slot !== 'startingTree' && c.slot !== 'treePrior')).toHaveLength(3);
+    xml = xmlOf(doc);
+    checkReferences(xml);
+    expect(xml.match(/<siteModel id=/g)).toHaveLength(1);
+    expect(xml).toContain('<parameter id="kappa"');
+    expect(xml).not.toContain('relativeRate');
+  });
+
+  it('removes or changes rate heterogeneity for one substitution model', () => {
+    const doc = coding();
+    setCodonScheme(doc, doc.data.alignments[0], '12+3');
+    setSiteHeterogeneity(doc, doc.partitions[1].substitution, null);
+    let xml = xmlOf(doc);
+    expect(xml).toContain('id="alpha"');
+    expect(xml).not.toContain('CP3.alpha');
+    setSiteHeterogeneity(doc, doc.partitions[1].substitution, 'siteHeterogeneity.gamma');
+    xml = xmlOf(doc);
+    checkReferences(xml);
+    expect(xml).toContain('id="CP3.alpha"');
+  });
+
+  it('makes a partition for each NEXUS charset and checks site ranges', () => {
+    const nexus = `#NEXUS
+begin data;
+  dimensions ntax=3 nchar=12;
+  format datatype=dna missing=? gap=-;
+  matrix
+    'A|2001' ATGAAACCCGGG
+    'B|2002' ATGAAGCCCGGA
+    'C|2003' ATGAAGCCAGGA
+  ;
+end;
+begin sets;
+  charset geneA = 1-6;
+  charset geneB = 7-12;
+end;`;
+    const doc = bindData(defaultTemplate(), [alignmentFromText(nexus, 'a1', 'genes')]);
+    expect(doc.partitions.map((p) => [p.name, p.sites])).toEqual([
+      ['geneA', [{ from: 1, to: 6 }]],
+      ['geneB', [{ from: 7, to: 12 }]],
+    ]);
+    const xml = xmlOf(doc);
+    checkReferences(xml);
+    expect(xml).toContain('<patterns id="geneA.patterns" from="1" to="6" strip="false">');
+    expect(xml).toContain('<patterns id="geneB.patterns" from="7" to="12" strip="false">');
+    expect(xml.match(/<siteModel id=/g)).toHaveLength(1);
+
+    doc.partitions[1].sites = [{ from: 7, to: 20 }];
+    expect(generate(doc, registry).issues.map((i) => i.message)).toContain(
+      'Partition "geneB" has a site range outside its alignment (1 to 12)',
+    );
   });
 });
 
@@ -209,6 +417,7 @@ describe('settings and templates', () => {
   it('lists the applicable settings and those a template asks for', () => {
     const doc = defaultTemplate();
     expect(openSettings(doc, registry).map((s) => s.path)).toEqual(['name', 'mcmc.chainLength']);
+    expect(listSettings(doc, registry).map((s) => s.path)).toContain('models.treePrior.module');
     const paths = (): string[] => listSettings(doc, registry).map((s) => s.path);
     expect(paths()).not.toContain('models.clock.fixedRate');
     setSetting(doc, registry, 'models.clock.rateMode', 'fixed');
@@ -223,6 +432,7 @@ describe('settings and templates', () => {
     expect(() => setSetting(doc, registry, 'mcmc.chainLength', 'many')).toThrow(/must be a number/);
     expect(() => setSetting(doc, registry, 'models.clock.rateMode', 'sometimes')).toThrow(/must be one of/);
     expect(() => setSetting(doc, registry, 'models.nothing.x', '1')).toThrow(/Unknown setting/);
+    expect(() => setSetting(doc, registry, 'models.clock.module', 'treePrior.skygrid')).toThrow(/must be one of/);
     expect(() => setSetting(doc, registry, 'name', 'has space')).toThrow(/expected format/);
   });
 

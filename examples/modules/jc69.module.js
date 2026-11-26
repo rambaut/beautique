@@ -6,7 +6,7 @@
  *
  *   beautique generate --module examples/modules/jc69.module.js \
  *       --template examples/templates/jc69-strict-constant.json \
- *       --fasta examples/data/YFV.fasta
+ *       --data examples/data/YFV.fasta
  *
  * BEAST X has no separate JC element; JC69 is HKY with kappa fixed at 1 and
  * equal base frequencies, so there are no parameters, priors or operators.

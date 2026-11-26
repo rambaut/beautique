@@ -33,7 +33,7 @@ export function defaultTemplate(): AnalysisDocument {
     partitions: [
       {
         id: 'partition',
-        name: 'partition',
+        name: '',
         alignment: null,
         substitution: 'substitution',
         siteHeterogeneity: 'siteHeterogeneity',

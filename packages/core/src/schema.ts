@@ -35,6 +35,8 @@ export interface TextField extends FieldBase {
 export interface IntegerField extends FieldBase {
   type: 'integer';
   default?: number;
+  /** When true the value may be left empty; the module decides what that means. */
+  optional?: boolean;
   min?: number;
   max?: number;
   step?: number;
@@ -44,6 +46,8 @@ export interface IntegerField extends FieldBase {
 export interface RealField extends FieldBase {
   type: 'real';
   default?: number;
+  /** When true the value may be left empty; the module decides what that means. */
+  optional?: boolean;
   min?: number;
   max?: number;
   /** When true the value must be strictly greater than `min`. */
@@ -136,6 +140,7 @@ export function validateField(field: FieldSchema, value: unknown): string | null
     }
     case 'integer':
     case 'real': {
+      if (field.optional && (value === undefined || value === null)) return null;
       if (typeof value !== 'number' || !Number.isFinite(value)) return 'must be a number';
       if (field.type === 'integer' && !Number.isInteger(value)) return 'must be a whole number';
       const exclusiveMin = field.type === 'real' && field.exclusiveMin;

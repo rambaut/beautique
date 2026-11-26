@@ -4,7 +4,8 @@
  * should be asked for when it is applied.
  */
 
-import { detectDateSpec, type AlignmentData, type DataSection } from './data';
+import { detectDateSpec, type AlignmentData, type DataSection, type SiteRange } from './data';
+import { attachAlignment } from './partitions';
 import type { PriorSpec, Slot } from './module-api';
 import type { OptionsSchema, OptionValues } from './schema';
 
@@ -25,9 +26,12 @@ export interface ModelInstance {
 
 export interface Partition {
   id: string;
+  /** Display name; empty in a template means "take the alignment's name". */
   name: string;
   /** Id of the alignment, or null in a template that is not yet bound to data. */
   alignment: string | null;
+  /** The alignment columns in this partition; all of them when absent. */
+  sites?: SiteRange[];
   substitution: string;
   /** Optional: null means no among-site rate heterogeneity. */
   siteHeterogeneity: string | null;
@@ -78,9 +82,9 @@ export interface AnalysisDocument {
   partitions: Partition[];
   tree: TreeSpec;
   components: ModelInstance[];
-  /** Overrides keyed by XML parameter id. */
+  /** Overrides keyed by `<instance id>/<parameter name>` (see `ResolvedParameter.key`). */
   parameters: Record<string, ParameterOverride>;
-  /** Overrides keyed by operator key (instance prefix + local key). */
+  /** Overrides keyed by `<instance id>/<operator key>` (see `ResolvedOperator.key`). */
   operators: Record<string, OperatorOverride>;
   mcmc: Partial<McmcSettings>;
   template?: TemplateInfo;
@@ -142,37 +146,15 @@ export function assertDocument(value: unknown): asserts value is AnalysisDocumen
 }
 
 /**
- * Attach alignments to a document. Unbound partitions are bound to the
- * alignments in order. A single unbound partition is repeated for every
- * alignment, so the alignments share its models. Dates set to `auto` are
- * detected from the taxon labels. Returns a new document.
+ * Attach alignments to a document (see `attachAlignment` for how partitions
+ * are made). Dates set to `auto` are detected from the taxon labels. Returns
+ * a new document.
  */
 export function bindData(doc: AnalysisDocument, alignments: AlignmentData[]): AnalysisDocument {
   const bound: AnalysisDocument = structuredClone({ ...doc, data: { ...doc.data, alignments: [] } });
-  bound.data.alignments = alignments;
   bound.kind = 'project';
-
-  const unbound = bound.partitions.filter((p) => p.alignment === null);
-  if (unbound.length === 1 && alignments.length > 1) {
-    const prototype = unbound[0];
-    const index = bound.partitions.indexOf(prototype);
-    const copies = alignments.map((a, i) => ({
-      ...prototype,
-      id: `${prototype.id}-${i + 1}`,
-      name: a.name,
-      alignment: a.id,
-    }));
-    bound.partitions.splice(index, 1, ...copies);
-  } else if (unbound.length === alignments.length) {
-    unbound.forEach((p, i) => {
-      p.alignment = alignments[i].id;
-    });
-  } else {
-    throw new Error(
-      `The template expects ${unbound.length} alignment(s) but ${alignments.length} were provided`,
-    );
-  }
-
+  for (const alignment of alignments) attachAlignment(bound, alignment);
+  bound.data.alignments = alignments;
   if (bound.data.dates.mode === 'auto') {
     bound.data.dates = detectDateSpec(alignments.flatMap((a) => a.sequences.map((s) => s.label)));
   }

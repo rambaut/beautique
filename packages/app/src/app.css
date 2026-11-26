@@ -398,3 +398,87 @@ th {
     display: none;
   }
 }
+
+h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+}
+
+.qualifier {
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.8rem;
+}
+
+.nested {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.nested > :last-child {
+  margin-bottom: 0;
+}
+
+.card.wide {
+  max-width: none;
+}
+
+label.button {
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+label.button:hover,
+label.button:focus-within {
+  border-color: var(--accent);
+}
+
+label.button input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+label.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.block {
+  display: block;
+}
+
+tr.changed td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+tr.off td:not(:first-child):not(:last-child) {
+  opacity: 0.5;
+}
+
+td input.short {
+  width: 5.5rem;
+}
+
+/* wide tables scroll inside their card instead of spilling under the preview */
+.card {
+  overflow-x: auto;
+}
+
+td .control {
+  flex-wrap: nowrap;
+}
+
+td.nowrap {
+  white-space: nowrap;
+}

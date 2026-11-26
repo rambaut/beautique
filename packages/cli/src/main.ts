@@ -3,11 +3,12 @@ import { basename, extname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
-  alignmentFromFasta,
+  alignmentFromText,
   assertDocument,
   bindData,
   generate,
   listSettings,
+  setCodonScheme,
   setSetting,
   SLOT_LABELS,
   BEAUTIQUE_VERSION,
@@ -20,13 +21,14 @@ import { createRegistry, defaultTemplate } from '@beautique/modules';
 const USAGE = `BEAUtique v${BEAUTIQUE_VERSION}: generate BEAST X analysis files
 
 Usage:
-  beautique generate --fasta <file> [options]   Write a BEAST XML file
+  beautique generate --data <file> [options]    Write a BEAST XML file
   beautique describe [template.json]            List a template's settings
   beautique modules                             List the available modules
 
 Options for generate:
   -t, --template <file>     Template or project (JSON). Default: the built-in template
-  -f, --fasta <file>        Aligned sequences; repeat for several partitions
+  -d, --data <file>         Aligned sequences (FASTA or NEXUS); repeat for several files
+      --codon <scheme>      Partition by codon position: 12+3 or 1+2+3
   -o, --output <file>       Output file. Default: <name>.xml
   -n, --name <name>         Analysis name (stem of BEAST's output files)
   -s, --set <path=value>    Set a setting; repeatable (see "describe" for paths)
@@ -79,7 +81,10 @@ async function main(argv: string[]): Promise<number> {
     allowPositionals: true,
     options: {
       template: { type: 'string', short: 't' },
+      data: { type: 'string', short: 'd', multiple: true },
+      // accepted as an alias of --data
       fasta: { type: 'string', short: 'f', multiple: true },
+      codon: { type: 'string' },
       output: { type: 'string', short: 'o' },
       name: { type: 'string', short: 'n' },
       set: { type: 'string', short: 's', multiple: true },
@@ -118,21 +123,26 @@ async function main(argv: string[]): Promise<number> {
 
   if (command !== 'generate') throw new UsageError(`Unknown command "${command}"`);
 
-  const fastaPaths = values.fasta ?? [];
+  const fastaPaths = [...(values.data ?? []), ...(values.fasta ?? [])];
   let doc = await loadDocument(values.template);
   if (fastaPaths.length > 0) {
     const alignments = [];
     for (const [i, path] of fastaPaths.entries()) {
       const name = basename(path, extname(path));
-      alignments.push(alignmentFromFasta(await readFile(path, 'utf8'), `alignment-${i + 1}`, name));
+      alignments.push(alignmentFromText(await readFile(path, 'utf8'), `alignment-${i + 1}`, name));
     }
     if (doc.data.alignments.length > 0) {
-      throw new UsageError('The project already contains sequence data; --fasta can only be used with a template');
+      throw new UsageError('The project already contains sequence data; --data can only be used with a template');
     }
     if (doc.name === 'analysis' && !values.name) doc.name = alignments[0].name;
     doc = bindData(doc, alignments);
   } else if (doc.data.alignments.length === 0) {
-    throw new UsageError('No sequence data: give at least one --fasta file');
+    throw new UsageError('No sequence data: give at least one --data file');
+  }
+
+  if (values.codon !== undefined) {
+    if (values.codon !== '12+3' && values.codon !== '1+2+3') throw new UsageError('--codon must be 12+3 or 1+2+3');
+    for (const alignment of doc.data.alignments) setCodonScheme(doc, alignment, values.codon);
   }
 
   if (values['no-dates']) {
@@ -158,7 +168,7 @@ async function main(argv: string[]): Promise<number> {
     given.add(assignment.slice(0, eq));
   }
 
-  const unanswered = (values.template ? (doc.template?.ask ?? []) : []).filter((path) => !given.has(path));
+  const unanswered = (values.template && fastaPaths.length > 0 ? (doc.template?.ask ?? []) : []).filter((path) => !given.has(path));
   if (unanswered.length > 0) {
     console.error(`Note: using the template's values for: ${unanswered.join(', ')}`);
   }
