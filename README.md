@@ -19,6 +19,8 @@ Status: early development. What it covers so far:
 
 ## Getting started
 
+The app runs in the browser at <https://rambaut.github.io/beautique/>, with nothing to install. To run it locally or to use the command line:
+
 Requires Node.js 22 or later.
 
 ```
